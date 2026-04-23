@@ -22,6 +22,20 @@ export class DatabaseService {
     `);
 
     this.sqlite.exec(schema.bootstrapSql);
+    this.ensureColumn("messages", "attachment_image_data_url", "TEXT");
+    this.ensureColumn("messages", "attachment_mime_type", "TEXT");
+  }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string) {
+    const columns = this.sqlite
+      .prepare(`PRAGMA table_info(${tableName})`)
+      .all() as Array<{ name: string }>;
+
+    if (columns.some((column) => column.name === columnName)) {
+      return;
+    }
+
+    this.sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
   close() {

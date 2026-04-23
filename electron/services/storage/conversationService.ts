@@ -83,6 +83,8 @@ export class ConversationService {
         messageRole: messages.messageRole,
         contentText: messages.contentText,
         contentType: messages.contentType,
+        attachmentImageDataUrl: messages.attachmentImageDataUrl,
+        attachmentMimeType: messages.attachmentMimeType,
         replyToMessageId: messages.replyToMessageId,
         isDeleted: messages.isDeleted,
         editedAt: messages.editedAt,
@@ -142,6 +144,8 @@ export class ConversationService {
     conversationId: string;
     senderId: string;
     text: string;
+    attachmentImageDataUrl?: string;
+    attachmentMimeType?: string;
   }) {
     const [message] = await this.database.db
       .insert(messages)
@@ -151,7 +155,9 @@ export class ConversationService {
         senderType: "user",
         sourceType: "local_ai",
         contentText: input.text,
-        contentType: "text",
+        contentType: input.attachmentImageDataUrl ? "text_image" : "text",
+        attachmentImageDataUrl: input.attachmentImageDataUrl,
+        attachmentMimeType: input.attachmentMimeType,
         messageRole: "inbound",
       })
       .returning();
@@ -166,6 +172,8 @@ export class ConversationService {
     text: string;
     sourceType?: string;
     externalMessageId?: string;
+    attachmentImageDataUrl?: string;
+    attachmentMimeType?: string;
   }) {
     const [message] = await this.database.db
       .insert(messages)
@@ -176,7 +184,9 @@ export class ConversationService {
         senderType: "human_agent",
         sourceType: input.sourceType ?? "moonchat_human",
         contentText: input.text,
-        contentType: "text",
+        contentType: input.attachmentImageDataUrl ? "text_image" : "text",
+        attachmentImageDataUrl: input.attachmentImageDataUrl,
+        attachmentMimeType: input.attachmentMimeType,
         messageRole: "outbound",
       })
       .returning();
@@ -250,6 +260,8 @@ export class ConversationService {
     senderId: string;
     text: string;
     externalMessageId?: string;
+    attachmentImageDataUrl?: string;
+    attachmentMimeType?: string;
   }) {
     const [message] = await this.database.db
       .insert(messages)
@@ -260,7 +272,9 @@ export class ConversationService {
         senderType: "ai_agent",
         sourceType: "moonchat_ai",
         contentText: input.text,
-        contentType: "text",
+        contentType: input.attachmentImageDataUrl ? "text_image" : "text",
+        attachmentImageDataUrl: input.attachmentImageDataUrl,
+        attachmentMimeType: input.attachmentMimeType,
         messageRole: "outbound",
       })
       .returning();
@@ -317,6 +331,11 @@ export class ConversationService {
     return this.database.db.query.conversations.findFirst({
       where: eq(conversations.id, conversationId),
     });
+  }
+
+  async clearConversationMessages(conversationId: string) {
+    await this.database.db.delete(messages).where(eq(messages.conversationId, conversationId));
+    await this.touchConversation(conversationId);
   }
 
   private async touchConversation(conversationId: string) {

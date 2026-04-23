@@ -8,16 +8,39 @@ export function registerAppIpc(runtime: AppRuntime) {
   ipcMain.handle("memory:list-relevant", async (_event, payload: { conversationId?: string; userId?: string }) =>
     runtime.memory.listRelevantMemories(payload),
   );
+  ipcMain.handle("memory:get-global-ai", async () => runtime.memory.getGlobalAiMemories());
+  ipcMain.handle(
+    "memory:update-global-ai",
+    async (
+      _event,
+      payload: { memoryType: "base" | "style" | "knowledge"; content: string; summary: string },
+    ) => {
+      await runtime.memory.upsertGlobalAiMemory(payload);
+      return { ok: true };
+    },
+  );
   ipcMain.handle("conversation:list", async () => runtime.conversations.list());
   ipcMain.handle("conversation:get-messages", async (_event, conversationId: string) =>
     runtime.conversations.listMessages(conversationId),
   );
   ipcMain.handle(
     "conversation:send-manual-message",
-    async (_event, payload: { conversationId: string; text: string }) => {
+    async (
+      _event,
+      payload: {
+        conversationId: string;
+        text: string;
+        imageDataUrl?: string;
+        imageMimeType?: string;
+      },
+    ) => {
       const conversation = await runtime.conversations.getConversation(payload.conversationId);
       if (!conversation) {
         throw new Error("Conversation not found.");
+      }
+
+      if (payload.imageDataUrl && conversation.channelType !== "local_ai") {
+        throw new Error("当前只有 AI 助手支持图片发送。");
       }
 
       if (conversation.channelType === "telegram" && conversation.externalChatId) {
@@ -42,10 +65,14 @@ export function registerAppIpc(runtime: AppRuntime) {
           conversationId: payload.conversationId,
           senderId: "local-human",
           text: payload.text,
+          attachmentImageDataUrl: payload.imageDataUrl,
+          attachmentMimeType: payload.imageMimeType,
         });
         await runtime.ai.handleLocalAiChat({
           conversationId: payload.conversationId,
           inboundText: payload.text,
+          imageDataUrl: payload.imageDataUrl,
+          imageMimeType: payload.imageMimeType,
         });
         return { ok: true };
       }
@@ -77,6 +104,13 @@ export function registerAppIpc(runtime: AppRuntime) {
         messageId: payload.messageId,
         deletedBy: "local-human",
       });
+      return { ok: true };
+    },
+  );
+  ipcMain.handle(
+    "conversation:clear-messages",
+    async (_event, payload: { conversationId: string }) => {
+      await runtime.conversations.clearConversationMessages(payload.conversationId);
       return { ok: true };
     },
   );

@@ -1,5 +1,6 @@
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import type { AppSettings } from "../../../src/shared/contracts.js";
@@ -23,6 +24,17 @@ export interface LearningArtifacts {
   userProfile: string;
   keyFacts: string[];
   strategyNotes: string;
+}
+
+export interface AiAssistantMemoryUpdate {
+  memoryType: "base" | "style" | "knowledge";
+  content: string;
+  summary: string;
+}
+
+export interface AiAssistantResult {
+  reply: string;
+  memoryUpdates: AiAssistantMemoryUpdate[];
 }
 
 export class LangChainAiService {
@@ -142,6 +154,65 @@ export class LangChainAiService {
     return parseLearningArtifacts(raw, input.recentMessages);
   }
 
+  async generateAiAssistantResponse(input: {
+    userMessage: string;
+    recentMessages: ConversationMessage[];
+    baseMemory: string;
+    styleMemory: string;
+    knowledgeMemory: string;
+    imageDataUrl?: string;
+  }): Promise<AiAssistantResult> {
+    if (!this.isConfigured()) {
+      return {
+        reply: "AI 尚未配置。请先到 AI > 模型 中填写可用的模型和 API 配置。",
+        memoryUpdates: [],
+      };
+    }
+
+    const promptText = [
+      "当前基础记忆:",
+      input.baseMemory || "暂无基础记忆",
+      "当前风格记忆:",
+      input.styleMemory || "暂无风格记忆",
+      "当前知识记忆:",
+      input.knowledgeMemory || "暂无知识记忆",
+      "最近对话:",
+      serializeMessages(input.recentMessages),
+      "用户刚才说:",
+      input.userMessage || "用户仅发送了一张图片，请结合图片理解意图。",
+      input.imageDataUrl ? "用户还附带了一张图片，请结合图片内容一起理解。" : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const humanContent = input.imageDataUrl
+      ? [
+          { type: "text", text: promptText },
+          { type: "image_url", image_url: { url: input.imageDataUrl } },
+        ]
+      : promptText;
+
+    const rawResponse = await this.getModel().invoke([
+      new SystemMessage(
+        [
+          "你是 MoonChat 的 AI 助手配置官。",
+          "你的职责是和用户对话，并在用户明确提出修改 AI 基础记忆、风格记忆、知识记忆时，输出对应的更新建议。",
+          "如果用户只是咨询、讨论或闲聊，可以只回复，不必更新记忆。",
+          "输出必须是严格 JSON，不要使用 Markdown 代码块。",
+          'JSON 必须包含 "reply" 和 "memoryUpdates" 两个字段。',
+          '"memoryUpdates" 是数组，元素结构为 { "memoryType": "base" | "style" | "knowledge", "content": string, "summary": string }。',
+          "只有在你确信用户希望修改对应记忆时才返回 memoryUpdates。",
+          "reply 使用自然中文，说明你做了什么或为什么没有修改。",
+        ].join("\n"),
+      ),
+      new HumanMessage({ content: humanContent }),
+    ]);
+
+    const raw = extractTextFromResponse(rawResponse.content);
+
+    return parseAiAssistantResult(raw);
+  }
+
   private getModel() {
     if (!this.model) {
       this.model = new ChatOpenAI({
@@ -166,9 +237,31 @@ function serializeMessages(messages: ConversationMessage[]) {
   return messages
     .map(
       (message) =>
-        `${message.createdAt} | ${message.senderType}/${message.messageRole}/${message.sourceType}: ${message.contentText}`,
+        `${message.createdAt} | ${message.senderType}/${message.messageRole}/${message.sourceType}: ${message.contentText || "[无文字]"}${
+          message.attachmentImageDataUrl ? " [附图]" : ""
+        }`,
     )
     .join("\n");
+}
+
+function extractTextFromResponse(
+  content:
+    | string
+    | Array<{ type?: string; text?: string; [key: string]: unknown }>
+    | unknown,
+) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => (typeof item?.text === "string" ? item.text : ""))
+      .join("\n")
+      .trim();
+  }
+
+  return "";
 }
 
 function parseLearningArtifacts(raw: string, messages: ConversationMessage[]): LearningArtifacts {
@@ -204,4 +297,44 @@ function buildFallbackArtifacts(messages: ConversationMessage[]): LearningArtifa
     keyFacts: [],
     strategyNotes: "优先基于最近消息和明确事实回复，避免过度推测。",
   };
+}
+
+function parseAiAssistantResult(raw: string): AiAssistantResult {
+  const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+
+  try {
+    const parsed = JSON.parse(cleaned) as Partial<AiAssistantResult>;
+    const memoryUpdates = Array.isArray(parsed.memoryUpdates)
+      ? parsed.memoryUpdates.filter(isValidMemoryUpdate)
+      : [];
+
+    return {
+      reply: typeof parsed.reply === "string" && parsed.reply.trim()
+        ? parsed.reply.trim()
+        : "我已经理解你的要求，但这次没有形成可执行的记忆更新。",
+      memoryUpdates,
+    };
+  } catch {
+    return {
+      reply: "我已经收到你的要求，但这次没有成功解析结构化结果，所以暂时没有改动记忆。",
+      memoryUpdates: [],
+    };
+  }
+}
+
+function isValidMemoryUpdate(value: unknown): value is AiAssistantMemoryUpdate {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    (candidate.memoryType === "base" ||
+      candidate.memoryType === "style" ||
+      candidate.memoryType === "knowledge") &&
+    typeof candidate.content === "string" &&
+    candidate.content.trim().length > 0 &&
+    typeof candidate.summary === "string" &&
+    candidate.summary.trim().length > 0
+  );
 }

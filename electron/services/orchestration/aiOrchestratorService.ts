@@ -96,6 +96,8 @@ export class AiOrchestratorService {
   async handleLocalAiChat(input: {
     conversationId: string;
     inboundText: string;
+    imageDataUrl?: string;
+    imageMimeType?: string;
   }) {
     const conversation = await this.conversations.getConversation(input.conversationId);
     if (!conversation) {
@@ -106,29 +108,28 @@ export class AiOrchestratorService {
       .filter((message) => !message.isDeleted)
       .slice(-16);
 
-    const context = await this.memory.buildAiContext({
-      conversationId: input.conversationId,
-      userId: conversation.externalUserId,
-    });
-
-    const reply = await this.langChainAi.generateAutoReply({
-      conversationTitle: conversation.title,
-      inboundText: input.inboundText,
-      memoryContext: [
-        "这是本地 AI 策略助手会话。用户会通过这里调整你的基础策略、回复语气、知识记忆和运营规则。",
-        context || "暂无既有记忆。",
-      ].join("\n\n"),
+    const globalMemories = await this.memory.getGlobalAiMemories();
+    const replyResult = await this.langChainAi.generateAiAssistantResponse({
+      userMessage: input.inboundText,
       recentMessages,
+      baseMemory: findGlobalMemory(globalMemories, "base"),
+      styleMemory: findGlobalMemory(globalMemories, "style"),
+      knowledgeMemory: findGlobalMemory(globalMemories, "knowledge"),
+      imageDataUrl: input.imageDataUrl,
     });
 
-    if (!reply?.trim()) {
+    if (!replyResult.reply?.trim()) {
       throw new Error("AI did not return a reply. Please check AI settings.");
+    }
+
+    for (const update of replyResult.memoryUpdates) {
+      await this.memory.upsertGlobalAiMemory(update);
     }
 
     const outbound = await this.conversations.appendAiReply({
       conversationId: input.conversationId,
       senderId: "moonchat-ai",
-      text: reply.trim(),
+      text: replyResult.reply.trim(),
     });
 
     await this.database.db.insert(aiReplyLogs).values({
@@ -139,14 +140,19 @@ export class AiOrchestratorService {
       model: this.langChainAi.getModelName(),
       promptSnapshot: JSON.stringify({
         inboundText: input.inboundText,
-        memoryContext: context,
+        imageDataUrl: input.imageDataUrl,
         recentMessages,
         mode: "local_ai_chat",
+        memoryUpdates: replyResult.memoryUpdates,
       }),
-      responseSnapshot: reply.trim(),
+      responseSnapshot: replyResult.reply.trim(),
       status: "completed",
     });
 
-    return reply.trim();
+    return replyResult.reply.trim();
   }
+}
+
+function findGlobalMemory(memories: Awaited<ReturnType<MemoryService["getGlobalAiMemories"]>>, memoryType: string) {
+  return memories.find((memory) => memory.memoryType === memoryType)?.content ?? "";
 }

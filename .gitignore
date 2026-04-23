@@ -4,3 +4,4 @@ dist-electron
 data
 .env
 .DS_Store
+.idea

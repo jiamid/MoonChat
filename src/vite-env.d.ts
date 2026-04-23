@@ -11,6 +11,12 @@ interface Window {
       conversationId?: string;
       userId?: string;
     }) => Promise<import("./shared/contracts").MemoryEntry[]>;
+    getGlobalAiMemories: () => Promise<import("./shared/contracts").MemoryEntry[]>;
+    updateGlobalAiMemory: (payload: {
+      memoryType: "base" | "style" | "knowledge";
+      content: string;
+      summary: string;
+    }) => Promise<{ ok: boolean }>;
     listConversations: () => Promise<import("./shared/contracts").ConversationSummary[]>;
     getConversationMessages: (
       conversationId: string,
@@ -18,9 +24,11 @@ interface Window {
     sendManualMessage: (
       conversationId: string,
       text: string,
+      options?: { imageDataUrl?: string; imageMimeType?: string },
     ) => Promise<{ ok: boolean; externalMessageId?: string }>;
     updateMessage: (messageId: string, nextText: string) => Promise<{ ok: boolean }>;
     deleteMessage: (messageId: string) => Promise<{ ok: boolean }>;
+    clearConversationMessages: (conversationId: string) => Promise<{ ok: boolean }>;
     triggerLearning: (conversationId: string) => Promise<{ ok: boolean }>;
     toggleAutoReply: (conversationId: string, enabled: boolean) => Promise<{ ok: boolean }>;
   };

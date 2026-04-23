@@ -5,6 +5,7 @@ import type { MemoryEntry } from "../../../src/shared/contracts.js";
 
 export class MemoryService {
   constructor(private readonly database: DatabaseService) {}
+  private static readonly GLOBAL_AI_SCOPE_ID = "global-ai";
 
   async upsertConversationSummary(conversationId: string, content: string) {
     await this.upsertMemory({
@@ -145,5 +146,45 @@ export class MemoryService {
         confidence: memory.confidence,
         updatedAt: memory.updatedAt,
       }));
+  }
+
+  async getGlobalAiMemories(): Promise<MemoryEntry[]> {
+    const memoryRows = await this.database.db.query.memories.findMany();
+
+    return memoryRows
+      .filter(
+        (memory) =>
+          memory.memoryScope === "global_ai" &&
+          memory.scopeRefId === MemoryService.GLOBAL_AI_SCOPE_ID,
+      )
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .map((memory) => ({
+        id: memory.id,
+        memoryScope: memory.memoryScope,
+        memoryType: memory.memoryType,
+        scopeRefId: memory.scopeRefId,
+        content: memory.content,
+        summary: memory.summary,
+        confidence: memory.confidence,
+        updatedAt: memory.updatedAt,
+      }));
+  }
+
+  async upsertGlobalAiMemory(input: {
+    memoryType: "base" | "style" | "knowledge";
+    content: string;
+    summary: string;
+  }) {
+    await this.upsertMemory({
+      memoryScope: "global_ai",
+      memoryType: input.memoryType,
+      scopeRefId: MemoryService.GLOBAL_AI_SCOPE_ID,
+      content: input.content,
+      summary: input.summary,
+      source: "manual_ai_config",
+      importanceScore: 0.9,
+      confidence: 1,
+      isInferred: false,
+    });
   }
 }

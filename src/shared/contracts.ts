@@ -19,6 +19,8 @@ export interface ConversationMessage {
   messageRole: string;
   contentText: string;
   contentType: string;
+  attachmentImageDataUrl: string | null;
+  attachmentMimeType: string | null;
   replyToMessageId: string | null;
   isDeleted: boolean;
   editedAt: string | null;

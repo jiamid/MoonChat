@@ -17,6 +17,12 @@ const api = {
     conversationId?: string;
     userId?: string;
   }): Promise<MemoryEntry[]> => ipcRenderer.invoke("memory:list-relevant", payload),
+  getGlobalAiMemories: (): Promise<MemoryEntry[]> => ipcRenderer.invoke("memory:get-global-ai"),
+  updateGlobalAiMemory: (payload: {
+    memoryType: "base" | "style" | "knowledge";
+    content: string;
+    summary: string;
+  }): Promise<{ ok: boolean }> => ipcRenderer.invoke("memory:update-global-ai", payload),
   listConversations: (): Promise<ConversationSummary[]> =>
     ipcRenderer.invoke("conversation:list"),
   getConversationMessages: (conversationId: string): Promise<ConversationMessage[]> =>
@@ -24,12 +30,20 @@ const api = {
   sendManualMessage: (
     conversationId: string,
     text: string,
+    options?: { imageDataUrl?: string; imageMimeType?: string },
   ): Promise<{ ok: boolean; externalMessageId?: string }> =>
-    ipcRenderer.invoke("conversation:send-manual-message", { conversationId, text }),
+    ipcRenderer.invoke("conversation:send-manual-message", {
+      conversationId,
+      text,
+      imageDataUrl: options?.imageDataUrl,
+      imageMimeType: options?.imageMimeType,
+    }),
   updateMessage: (messageId: string, nextText: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("conversation:update-message", { messageId, nextText }),
   deleteMessage: (messageId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("conversation:delete-message", { messageId }),
+  clearConversationMessages: (conversationId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("conversation:clear-messages", { conversationId }),
   triggerLearning: (conversationId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("learning:trigger", conversationId),
   toggleAutoReply: (
