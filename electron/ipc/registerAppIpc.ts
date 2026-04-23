@@ -37,6 +37,19 @@ export function registerAppIpc(runtime: AppRuntime) {
         return { ok: true, externalMessageId: String(sent.message_id) };
       }
 
+      if (conversation.channelType === "local_ai") {
+        await runtime.conversations.createLocalUserMessage({
+          conversationId: payload.conversationId,
+          senderId: "local-human",
+          text: payload.text,
+        });
+        await runtime.ai.handleLocalAiChat({
+          conversationId: payload.conversationId,
+          inboundText: payload.text,
+        });
+        return { ok: true };
+      }
+
       await runtime.conversations.createHumanReply({
         conversationId: payload.conversationId,
         senderId: "local-human",

@@ -15,7 +15,38 @@ import type {
 export class ConversationService {
   constructor(private readonly database: DatabaseService) {}
 
+  async ensureLocalAiConversation() {
+    const existing = await this.database.db.query.conversations.findFirst({
+      where: eq(conversations.channelType, "local_ai"),
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    const [conversation] = await this.database.db
+      .insert(conversations)
+      .values({
+        title: "AI 策略助手",
+        channelType: "local_ai",
+        externalChatId: "local-ai",
+        externalUserId: "local-ai-user",
+        participantLabel: "本地 AI",
+      })
+      .returning();
+
+    await this.database.db.insert(conversationAiSettings).values({
+      conversationId: conversation.id,
+      autoReplyEnabled: 1,
+      replyMode: "auto",
+    });
+
+    return conversation;
+  }
+
   async list(): Promise<ConversationSummary[]> {
+    await this.ensureLocalAiConversation();
+
     const rows = await this.database.db
       .select({
         id: conversations.id,
@@ -105,6 +136,28 @@ export class ConversationService {
     });
 
     await this.touchConversation(input.conversationId);
+  }
+
+  async createLocalUserMessage(input: {
+    conversationId: string;
+    senderId: string;
+    text: string;
+  }) {
+    const [message] = await this.database.db
+      .insert(messages)
+      .values({
+        conversationId: input.conversationId,
+        senderId: input.senderId,
+        senderType: "user",
+        sourceType: "local_ai",
+        contentText: input.text,
+        contentType: "text",
+        messageRole: "inbound",
+      })
+      .returning();
+
+    await this.touchConversation(input.conversationId);
+    return message;
   }
 
   async createHumanReply(input: {

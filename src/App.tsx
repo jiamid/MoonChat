@@ -46,10 +46,15 @@ export function App() {
 
   const selectedConversation =
     conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
+  const localAiConversation =
+    conversations.find((conversation) => conversation.channelType === "local_ai") ?? null;
+  const channelConversations = conversations.filter(
+    (conversation) => conversation.channelType !== "local_ai",
+  );
 
   const filteredConversations = useMemo(() => {
     const keyword = conversationSearch.trim().toLowerCase();
-    return conversations.filter((conversation) => {
+    return channelConversations.filter((conversation) => {
       if (!keyword) {
         return true;
       }
@@ -64,7 +69,7 @@ export function App() {
         .toLowerCase()
         .includes(keyword);
     });
-  }, [conversationSearch, conversations]);
+  }, [channelConversations, conversationSearch]);
 
   const filteredMessages = useMemo(() => {
     const keyword = messageSearch.trim().toLowerCase();
@@ -270,7 +275,7 @@ export function App() {
             <header className="pane-header">
               <div>
                 <h1>消息</h1>
-                <p>Telegram Bot 会话</p>
+                <p>本地 AI 与渠道会话</p>
               </div>
               <button className="ghost-button" onClick={() => void refreshWorkspace()}>
                 刷新
@@ -278,18 +283,35 @@ export function App() {
             </header>
 
             <div className="list-toolbar">
+              {localAiConversation ? (
+                <button
+                  className={
+                    localAiConversation.id === selectedConversationId
+                      ? "local-ai-tab active"
+                      : "local-ai-tab"
+                  }
+                  onClick={() => {
+                    setSelectedConversationId(localAiConversation.id);
+                    setEditingMessageId(null);
+                    setEditingDraft("");
+                  }}
+                >
+                  <span>AI 策略助手</span>
+                  <small>本地对话 / 调整策略与记忆</small>
+                </button>
+              ) : null}
               <input
                 className="search-input"
                 value={conversationSearch}
                 onChange={(event) => setConversationSearch(event.target.value)}
-                placeholder="搜索会话"
+                placeholder="搜索渠道会话"
               />
             </div>
 
             <div className="session-list">
               {filteredConversations.length === 0 ? (
                 <EmptyState
-                  title={conversations.length === 0 ? "还没有会话" : "没有匹配的会话"}
+                  title={channelConversations.length === 0 ? "还没有渠道会话" : "没有匹配的会话"}
                   description="配置 Telegram 后，消息会自动进入这里。"
                 />
               ) : (
@@ -330,13 +352,15 @@ export function App() {
                 <h2>{selectedConversation?.title ?? "选择一个会话"}</h2>
                 <p>
                   {selectedConversation
-                    ? `${selectedConversation.channelType} / ${
+                    ? selectedConversation.channelType === "local_ai"
+                      ? "本地 AI 对话 / 用于调整策略、语气和知识记忆"
+                      : `${selectedConversation.channelType} / ${
                         selectedConversation.participantLabel ?? selectedConversation.externalUserId
                       }`
                     : "在左侧选择一个会话开始处理消息"}
                 </p>
               </div>
-              {selectedConversation ? (
+              {selectedConversation && selectedConversation.channelType !== "local_ai" ? (
                 <div className="topbar-actions">
                   <button
                     className={selectedConversation.autoReplyEnabled ? "toggle active" : "toggle"}
@@ -498,7 +522,11 @@ export function App() {
                 disabled={!selectedConversation || isBusy}
               />
               <div className="composer-actions">
-                <span>Telegram 会话会同时发回 Telegram，并写入本地记录。</span>
+                <span>
+                  {selectedConversation?.channelType === "local_ai"
+                    ? "本地 AI 对话只保存在本机，用于调策略和沉淀记忆。"
+                    : "Telegram 会话会同时发回 Telegram，并写入本地记录。"}
+                </span>
                 <button
                   className="primary-button"
                   onClick={() => void handleSendMessage()}
@@ -516,7 +544,7 @@ export function App() {
               {selectedConversation ? (
                 <div className="detail-list">
                   <p><span>标题</span>{selectedConversation.title}</p>
-                  <p><span>渠道</span>{selectedConversation.channelType}</p>
+                  <p><span>渠道</span>{describeChannel(selectedConversation.channelType)}</p>
                   <p><span>用户</span>{selectedConversation.externalUserId}</p>
                   <p><span>标签</span>{selectedConversation.participantLabel ?? "未命名"}</p>
                 </div>
@@ -718,6 +746,12 @@ function describeSource(sourceType: string) {
   if (sourceType === "moonchat_ai") return "MoonChat AI";
   if (sourceType === "moonchat_human") return "人工工作台";
   return sourceType;
+}
+
+function describeChannel(channelType: string) {
+  if (channelType === "local_ai") return "本地 AI";
+  if (channelType === "telegram") return "Telegram";
+  return channelType;
 }
 
 function labelMemoryType(memoryType: string) {

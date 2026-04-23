@@ -148,6 +148,31 @@ select {
   gap: 12px;
 }
 
+.local-ai-tab {
+  text-align: left;
+  width: 100%;
+  padding: 14px;
+  border-radius: 14px;
+  color: #eef3ff;
+  background: linear-gradient(135deg, rgba(106, 132, 255, 0.2), rgba(110, 200, 255, 0.1));
+  border: 1px solid rgba(106, 132, 255, 0.28);
+}
+
+.local-ai-tab.active {
+  border-color: rgba(110, 200, 255, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(110, 200, 255, 0.36);
+}
+
+.local-ai-tab span,
+.local-ai-tab small {
+  display: block;
+}
+
+.local-ai-tab small {
+  margin-top: 6px;
+  color: #aeb9cf;
+}
+
 .search-input,
 .filter-label select,
 .settings-field input,
