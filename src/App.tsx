@@ -68,6 +68,7 @@ export function App() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const aiImageInputRef = useRef<HTMLInputElement | null>(null);
+  const aiComposerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const previousAiMessageCountRef = useRef(0);
@@ -88,6 +89,7 @@ export function App() {
   );
   const firstChannelConversationId = channelConversations[0]?.id ?? null;
   const themeMode = settings.ui.themeMode;
+  const isAssistantView = view === "ai" && aiTab === "assistant";
 
   useEffect(() => {
     document.body.dataset.theme = themeMode;
@@ -225,17 +227,15 @@ export function App() {
 
   useEffect(() => {
     const hasNewAssistantMessage =
-      view === "ai" &&
-      aiTab === "assistant" &&
-      messages.length > previousAiMessageCountRef.current &&
-      messages.at(-1)?.senderType !== "user";
+      isAssistantView &&
+      messages.length > previousAiMessageCountRef.current;
 
     if (hasNewAssistantMessage) {
       aiMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
 
     previousAiMessageCountRef.current = messages.length;
-  }, [aiTab, messages, view]);
+  }, [isAssistantView, messages]);
 
   useEffect(() => {
     const hasNewChatMessage =
@@ -346,12 +346,11 @@ export function App() {
   }, [selectedConversationId, view, aiTab]);
 
   async function handleSendMessage() {
-    const targetConversationId =
-      view === "ai" && aiTab === "assistant" ? activeConversation?.id : selectedConversationId;
+    const targetConversationId = isAssistantView ? activeConversation?.id : selectedConversationId;
     const nextText = draft.trim();
-    const canSendImageOnly = view === "ai" && aiTab === "assistant" && Boolean(aiImageDraft);
+    const canSendImageOnly = isAssistantView && Boolean(aiImageDraft);
     const optimisticImageDraft = aiImageDraft;
-    const isAiAssistantSend = view === "ai" && aiTab === "assistant" && Boolean(activeConversation);
+    const isAiAssistantSend = isAssistantView && Boolean(activeConversation);
 
     if (!targetConversationId || (!nextText && !canSendImageOnly)) {
       return;
@@ -389,6 +388,10 @@ export function App() {
       if (aiImageInputRef.current) {
         aiImageInputRef.current.value = "";
       }
+      window.requestAnimationFrame(() => {
+        aiMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+        aiComposerTextareaRef.current?.focus();
+      });
     }
 
     try {
@@ -418,6 +421,11 @@ export function App() {
       setError(sendError instanceof Error ? sendError.message : "发送消息失败。");
     } finally {
       setIsBusy(false);
+      if (isAiAssistantSend) {
+        window.requestAnimationFrame(() => {
+          aiComposerTextareaRef.current?.focus();
+        });
+      }
     }
   }
 
@@ -1133,12 +1141,13 @@ export function App() {
                     </div>
                   ) : null}
                   <textarea
+                    ref={aiComposerTextareaRef}
                     rows={3}
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={handleComposerKeyDown}
                     placeholder="给 AI 发送消息"
-                    disabled={!activeConversation || isBusy}
+                    disabled={!activeConversation}
                   />
                   <div className="assistant-composer-actions">
                     <div className="assistant-composer-tools">

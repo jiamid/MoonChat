@@ -1,6 +1,7 @@
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { DynamicStructuredTool } from "@langchain/core/tools";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import type { AppSettings } from "../../../src/shared/contracts.js";
@@ -35,6 +36,19 @@ export interface AiAssistantMemoryUpdate {
 export interface AiAssistantResult {
   reply: string;
   memoryUpdates: AiAssistantMemoryUpdate[];
+}
+
+interface AssistantSendMessageResult {
+  ok: boolean;
+  status: "sent" | "ambiguous" | "not_found" | "unsupported";
+  message: string;
+  candidates?: Array<{
+    id: string;
+    title: string;
+    channelType: string;
+    externalUserId: string;
+    participantLabel: string | null;
+  }>;
 }
 
 export class LangChainAiService {
@@ -163,6 +177,58 @@ export class LangChainAiService {
     baseMemory: string;
     styleMemory: string;
     knowledgeMemory: string;
+    conversationCatalog: Array<{
+      id: string;
+      title: string;
+      channelType: string;
+      externalUserId: string;
+      externalChatId: string | null;
+      participantLabel: string | null;
+      autoReplyEnabled: boolean;
+      learningStatus: "idle" | "running" | "learned";
+      learnedAt: string | null;
+      updatedAt: string;
+      memories: Array<{
+        memoryScope: string;
+        memoryType: string;
+        summary: string | null;
+        content: string;
+        confidence: number;
+        updatedAt: string;
+      }>;
+    }>;
+    userCatalog: Array<{
+      externalUserId: string;
+      participantLabels: string[];
+      channels: string[];
+      conversationIds: string[];
+      conversationTitles: string[];
+      memories: Array<{
+        memoryScope: string;
+        memoryType: string;
+        summary: string | null;
+        content: string;
+        confidence: number;
+        updatedAt: string;
+      }>;
+    }>;
+    workspaceOverview: {
+      connectedChannels: string[];
+      conversationCount: number;
+      userCount: number;
+      channelBreakdown: Array<{
+        channelType: string;
+        conversationCount: number;
+        userCount: number;
+      }>;
+    };
+    sendConversationMessage: (input: {
+      conversationId?: string;
+      externalUserId?: string;
+      keyword?: string;
+      channelType?: string;
+      text: string;
+    }) => Promise<AssistantSendMessageResult>;
     imageDataUrl?: string;
   }): Promise<AiAssistantResult> {
     if (!this.isConfigured()) {
@@ -195,12 +261,163 @@ export class LangChainAiService {
         ]
       : promptText;
 
-    const rawResponse = await this.getModel().invoke([
+    const workspaceOverviewTool = new DynamicStructuredTool({
+      name: "get_workspace_overview",
+      description:
+        "查询当前 MoonChat 工作台已接入的渠道、会话数、会话用户数，以及各渠道的会话和用户统计。用户询问当前接入了哪些渠道、多少会话、多少会话用户时必须调用。",
+      schema: z.object({
+        reason: z.string().optional().describe("为什么需要查询工作台概览"),
+      }),
+      func: async () =>
+        JSON.stringify(
+          {
+            connectedChannels: input.workspaceOverview.connectedChannels,
+            conversationCount: input.workspaceOverview.conversationCount,
+            userCount: input.workspaceOverview.userCount,
+            channelBreakdown: input.workspaceOverview.channelBreakdown,
+          },
+          null,
+          2,
+        ),
+    });
+    const listConversationsTool = new DynamicStructuredTool({
+      name: "list_conversations",
+      description:
+        "列出 MoonChat 当前所有渠道会话。可按渠道或关键词过滤。用户询问有哪些会话、某个渠道有哪些聊天、最近有哪些用户时使用。",
+      schema: z.object({
+        channelType: z.string().optional().describe("按渠道筛选，如 telegram"),
+        keyword: z.string().optional().describe("按会话标题、备注、用户ID关键词筛选"),
+      }),
+      func: async ({ channelType, keyword }) => {
+        const normalizedKeyword = keyword?.trim().toLowerCase();
+        const results = input.conversationCatalog.filter((conversation) => {
+          const channelMatched = !channelType || conversation.channelType === channelType;
+          const keywordMatched =
+            !normalizedKeyword ||
+            [
+              conversation.title,
+              conversation.participantLabel ?? "",
+              conversation.externalUserId,
+              conversation.channelType,
+            ]
+              .join(" ")
+              .toLowerCase()
+              .includes(normalizedKeyword);
+
+          return channelMatched && keywordMatched;
+        });
+
+        return JSON.stringify(results, null, 2);
+      },
+    });
+    const conversationDetailsTool = new DynamicStructuredTool({
+      name: "get_conversation_details",
+      description:
+        "查看指定会话的详细信息，包括渠道、用户标识、备注、自动回复状态、学习状态以及相关记忆。用户询问某个会话详情、某个聊天记录情况时使用。",
+      schema: z.object({
+        conversationId: z.string().optional().describe("目标会话ID"),
+        keyword: z.string().optional().describe("会话标题、备注或用户ID关键词"),
+      }),
+      func: async ({ conversationId, keyword }) => {
+        const normalizedKeyword = keyword?.trim().toLowerCase();
+        const results = input.conversationCatalog.filter((conversation) => {
+          if (conversationId) {
+            return conversation.id === conversationId;
+          }
+
+          if (normalizedKeyword) {
+            return [
+              conversation.title,
+              conversation.participantLabel ?? "",
+              conversation.externalUserId,
+            ]
+              .join(" ")
+              .toLowerCase()
+              .includes(normalizedKeyword);
+          }
+
+          return false;
+        });
+
+        return JSON.stringify(results, null, 2);
+      },
+    });
+    const userDetailsTool = new DynamicStructuredTool({
+      name: "get_user_details",
+      description:
+        "查看某个用户的详情，包括该用户分布在哪些渠道、对应哪些会话、有哪些已学习记忆。用户询问某个用户信息、画像、事实、策略或联系方式/备注时使用。",
+      schema: z.object({
+        externalUserId: z.string().optional().describe("用户ID"),
+        keyword: z.string().optional().describe("用户ID、备注或会话标题关键词"),
+      }),
+      func: async ({ externalUserId, keyword }) => {
+        const normalizedKeyword = keyword?.trim().toLowerCase();
+        const results = input.userCatalog.filter((user) => {
+          if (externalUserId) {
+            return user.externalUserId === externalUserId;
+          }
+
+          if (normalizedKeyword) {
+            return [
+              user.externalUserId,
+              ...user.participantLabels,
+              ...user.conversationTitles,
+            ]
+              .join(" ")
+              .toLowerCase()
+              .includes(normalizedKeyword);
+          }
+
+          return false;
+        });
+
+        return JSON.stringify(
+          results,
+          null,
+          2,
+        );
+      },
+    });
+    const sendConversationMessageTool = new DynamicStructuredTool({
+      name: "send_message_to_conversation",
+      description:
+        "给指定会话或指定用户发送一条消息。只在用户明确要求代发、通知、联系某个用户时使用。发送前必须尽量确定唯一目标；如果目标不唯一，应返回候选项而不是擅自发送。",
+      schema: z.object({
+        conversationId: z.string().optional().describe("目标会话ID，最优先"),
+        externalUserId: z.string().optional().describe("目标用户ID"),
+        keyword: z.string().optional().describe("会话标题、备注、联系方式或用户ID关键词"),
+        channelType: z.string().optional().describe("渠道类型，如 telegram"),
+        text: z.string().min(1).describe("要发送给用户的消息正文"),
+      }),
+      func: async ({ conversationId, externalUserId, keyword, channelType, text }) =>
+        JSON.stringify(
+          await input.sendConversationMessage({
+            conversationId,
+            externalUserId,
+            keyword,
+            channelType,
+            text,
+          }),
+          null,
+          2,
+        ),
+    });
+    const llmWithBoundTools = this.getModel().bindTools([
+      workspaceOverviewTool,
+      listConversationsTool,
+      conversationDetailsTool,
+      userDetailsTool,
+      sendConversationMessageTool,
+    ]);
+    const conversationMessages = [
       new SystemMessage(
         [
           "你是 MoonChat 的 AI 助手配置官。",
-          "你的职责是和用户对话，并在用户明确提出修改 AI 基础记忆、风格记忆、知识记忆时，输出对应的更新建议。",
-          "如果用户只是咨询、讨论或闲聊，可以只回复，不必更新记忆。",
+          "你工作在 AI 助手窗口里，这里是 MoonChat 的管理台，不是某个真实用户的聊天窗口。",
+          "你的职责是帮助查看和管理所有渠道、所有聊天会话、所有会话用户，并在用户明确提出修改 AI 基础记忆、风格记忆、知识记忆时，输出对应的更新建议。",
+          "如果用户询问工作台里的渠道、会话、用户、画像、记忆等信息，必须优先调用工具获取，禁止凭空猜测。",
+          "如果用户明确要求给某个用户或某个会话发送消息，必须调用发送工具执行；不要假装已经发出。",
+          "如果发送工具返回目标不唯一或没找到，应如实说明并引导用户进一步指定。",
           "输出必须是严格 JSON，不要使用 Markdown 代码块。",
           'JSON 必须包含 "reply" 和 "memoryUpdates" 两个字段。',
           '"memoryUpdates" 是数组，元素结构为 { "memoryType": "base" | "style" | "knowledge", "content": string, "summary": string }。',
@@ -209,11 +426,59 @@ export class LangChainAiService {
         ].join("\n"),
       ),
       new HumanMessage({ content: humanContent }),
-    ]);
-
-    const raw = extractTextFromResponse(rawResponse.content);
+    ];
+    const finalResponse = await this.invokeWithTools(conversationMessages, llmWithBoundTools, {
+      [workspaceOverviewTool.name]: workspaceOverviewTool,
+      [listConversationsTool.name]: listConversationsTool,
+      [conversationDetailsTool.name]: conversationDetailsTool,
+      [userDetailsTool.name]: userDetailsTool,
+      [sendConversationMessageTool.name]: sendConversationMessageTool,
+    });
+    const raw = extractTextFromResponse(finalResponse.content);
 
     return parseAiAssistantResult(raw);
+  }
+
+  private async invokeWithTools(
+    messages: Array<SystemMessage | HumanMessage | AIMessage | ToolMessage>,
+    llmWithTools: ReturnType<ChatOpenAI["bindTools"]>,
+    tools: Record<string, DynamicStructuredTool>,
+  ) {
+    const transcript = [...messages];
+
+    for (let i = 0; i < 3; i += 1) {
+      const response = await llmWithTools.invoke(transcript);
+      if (!AIMessage.isInstance(response) || !response.tool_calls?.length) {
+        return response;
+      }
+
+      transcript.push(response);
+      for (const toolCall of response.tool_calls) {
+        const tool = tools[toolCall.name];
+        if (!tool) {
+          transcript.push(
+            new ToolMessage({
+              content: `未知工具: ${toolCall.name}`,
+              tool_call_id: toolCall.id ?? toolCall.name,
+              status: "error",
+            }),
+          );
+          continue;
+        }
+
+        const result = await tool.invoke(toolCall);
+        transcript.push(
+          ToolMessage.isInstance(result)
+            ? result
+            : new ToolMessage({
+                content: typeof result === "string" ? result : JSON.stringify(result),
+                tool_call_id: toolCall.id ?? tool.name,
+              }),
+        );
+      }
+    }
+
+    return llmWithTools.invoke(transcript);
   }
 
   private getModel() {

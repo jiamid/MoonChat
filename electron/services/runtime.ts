@@ -36,6 +36,35 @@ export class AppRuntime {
     const learning = new LearningService(db, memory, conversations, langChainAi);
     const dashboard = new DashboardService(db);
     const telegram = new TelegramBotService(conversations, ai);
+    ai.setAssistantConversationSender(async ({ conversationId, text }) => {
+      const conversation = await conversations.getConversation(conversationId);
+      if (!conversation) {
+        throw new Error("Conversation not found.");
+      }
+
+      if (conversation.channelType === "telegram" && conversation.externalChatId) {
+        const sent = await telegram.sendManualMessage(conversation.externalChatId, text);
+        await conversations.createHumanReply({
+          conversationId,
+          senderId: "moonchat-ai-assistant",
+          text,
+          sourceType: "telegram",
+          externalMessageId: String(sent.message_id),
+        });
+        return { channelType: conversation.channelType };
+      }
+
+      if (conversation.channelType === "local_ai") {
+        throw new Error("AI 助手不能给本地 AI 会话发送外部消息。");
+      }
+
+      await conversations.createHumanReply({
+        conversationId,
+        senderId: "moonchat-ai-assistant",
+        text,
+      });
+      return { channelType: conversation.channelType };
+    });
 
     await db.migrate();
     await telegram.start(settings.getSettings().telegram.botToken);
