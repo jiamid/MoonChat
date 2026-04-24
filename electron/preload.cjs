@@ -22,7 +22,18 @@ contextBridge.exposeInMainWorld("moonchat", {
   deleteMessage: (messageId) => ipcRenderer.invoke("conversation:delete-message", { messageId }),
   clearConversationMessages: (conversationId) =>
     ipcRenderer.invoke("conversation:clear-messages", { conversationId }),
+  updateParticipantLabel: (conversationId, participantLabel) =>
+    ipcRenderer.invoke("conversation:update-participant-label", { conversationId, participantLabel }),
   triggerLearning: (conversationId) => ipcRenderer.invoke("learning:trigger", conversationId),
   toggleAutoReply: (conversationId, enabled) =>
     ipcRenderer.invoke("conversation:toggle-auto-reply", { conversationId, enabled }),
+  onConversationChanged: (listener) => {
+    const wrappedListener = (_event, payload) => {
+      listener(payload);
+    };
+    ipcRenderer.on("conversation:changed", wrappedListener);
+    return () => {
+      ipcRenderer.removeListener("conversation:changed", wrappedListener);
+    };
+  },
 });

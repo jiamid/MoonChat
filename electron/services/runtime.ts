@@ -50,6 +50,7 @@ export class AppRuntime {
   async updateSettings(nextSettings: AppSettings) {
     const saved = await this.settings.updateSettings(nextSettings);
     this.ai.reconfigure(saved.ai);
+    this.learning.reconfigure(saved.ai);
     await this.telegram.reconfigure(saved.telegram.botToken);
     return saved;
   }

@@ -4,6 +4,7 @@ import type { MemoryService } from "../memory/memoryService.js";
 import type { ConversationService } from "../storage/conversationService.js";
 import { learningJobs, messages } from "../../../src/shared/db/schema.js";
 import type { LangChainAiService } from "../ai/langChainAiService.js";
+import type { AppSettings } from "../../../src/shared/contracts.js";
 
 export class LearningService {
   constructor(
@@ -13,7 +14,24 @@ export class LearningService {
     private readonly langChainAi: LangChainAiService,
   ) {}
 
+  reconfigure(settings: AppSettings["ai"]) {
+    this.langChainAi.configure(settings);
+  }
+
   async triggerConversationLearning(conversationId: string) {
+    const runningJob = await this.database.db.query.learningJobs.findFirst({
+      where: eq(learningJobs.targetConversationId, conversationId),
+      orderBy: [desc(learningJobs.updatedAt)],
+    });
+    if (runningJob?.status === "running") {
+      return { status: "running" as const };
+    }
+
+    const existingSummary = await this.memory.getConversationSummaryMemory(conversationId);
+    if (existingSummary) {
+      return { status: "already_learned" as const };
+    }
+
     const [job] = await this.database.db
       .insert(learningJobs)
       .values({
@@ -23,6 +41,8 @@ export class LearningService {
         targetConversationId: conversationId,
       })
       .returning();
+
+    this.conversations.notifyChanged(conversationId);
 
     try {
       const conversation = await this.conversations.getConversation(conversationId);
@@ -88,6 +108,8 @@ export class LearningService {
         .update(learningJobs)
         .set({ status: "completed", updatedAt: new Date().toISOString() })
         .where(eq(learningJobs.id, job.id));
+      this.conversations.notifyChanged(conversationId);
+      return { status: "started" as const };
     } catch (error) {
       await this.database.db
         .update(learningJobs)
@@ -97,6 +119,7 @@ export class LearningService {
           updatedAt: new Date().toISOString(),
         })
         .where(eq(learningJobs.id, job.id));
+      this.conversations.notifyChanged(conversationId);
       throw error;
     }
   }

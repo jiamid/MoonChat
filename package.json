@@ -7,20 +7,29 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "debug": "concurrently -k \"npm:dev:web\" \"npm:dev:main\" \"npm:debug:electron\"",
     "dev:web": "vite",
     "dev:main": "tsc -w -p tsconfig.node.json --preserveWatchOutput",
-    "dev:electron": "wait-on tcp:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 node scripts/dev-electron.mjs",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node scripts/dev-electron.mjs",
+    "debug:electron": "wait-on tcp:127.0.0.1:5173 file:dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 MOONCHAT_OPEN_DEVTOOLS=1 node scripts/dev-electron.mjs",
     "build": "npm run build:web && npm run build:main",
     "build:web": "vite build",
     "build:main": "tsc -p tsconfig.node.json",
+    "build:icons": "node scripts/prepare-icons.mjs",
+    "dist:mac": "npm run build && npm run build:icons && electron-builder --mac dmg zip",
+    "pack:mac": "npm run build && npm run build:icons && electron-builder --mac dir",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "start": "electron dist-electron/electron/main.js",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
     "@langchain/core": "^1.1.40",
     "@langchain/openai": "^1.4.4",
+    "@mui/icons-material": "^9.0.0",
+    "@mui/material": "^9.0.0",
     "better-sqlite3": "^12.9.0",
     "drizzle-orm": "^0.45.2",
     "langchain": "^1.3.3",
@@ -41,9 +50,35 @@
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "electron": "^41.2.2",
+    "electron-builder": "^26.8.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.9",
     "wait-on": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.moonchat.desktop",
+    "productName": "MoonChat",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "electron/preload.cjs",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.icns"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   }
 }

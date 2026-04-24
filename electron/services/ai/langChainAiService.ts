@@ -125,8 +125,11 @@ export class LangChainAiService {
       [
         "system",
         [
+          `当前 AI 系统设定: ${this.config.systemPrompt}`,
           "你负责从聊天记录中提炼长期有价值的记忆。",
           "请仅根据给定聊天内容总结，不要脑补没有出现的事实。",
+          '"summary" 必须是一段 1-3 句的摘要，概括这段会话主要聊了什么、当前进展和用户核心关注点。',
+          '"summary" 绝对不能按时间顺序复述消息，不能写成一条一条的流水账，不能直接拼接原话。',
           "输出必须是严格 JSON，不要使用 Markdown 代码块。",
           '字段必须包含: "summary", "userProfile", "keyFacts", "strategyNotes"。',
           '"keyFacts" 必须是字符串数组。',
@@ -286,10 +289,7 @@ function parseLearningArtifacts(raw: string, messages: ConversationMessage[]): L
 
 function buildFallbackArtifacts(messages: ConversationMessage[]): LearningArtifacts {
   const ordered = messages.slice(-20);
-  const summary = ordered
-    .map((message) => `${message.senderType}/${message.messageRole}: ${message.contentText}`)
-    .join("\n")
-    .slice(0, 3000);
+  const summary = buildFallbackSummary(ordered);
 
   return {
     summary,
@@ -297,6 +297,36 @@ function buildFallbackArtifacts(messages: ConversationMessage[]): LearningArtifa
     keyFacts: [],
     strategyNotes: "优先基于最近消息和明确事实回复，避免过度推测。",
   };
+}
+
+function buildFallbackSummary(messages: ConversationMessage[]) {
+  const visibleMessages = messages
+    .filter((message) => !message.isDeleted && (message.contentText?.trim() || message.attachmentImageDataUrl))
+    .slice(-8);
+
+  if (!visibleMessages.length) {
+    return "本轮会话暂无足够内容，暂时无法形成有效摘要。";
+  }
+
+  const userTopics = visibleMessages
+    .filter((message) => message.senderType === "user")
+    .map((message) => message.contentText?.trim())
+    .filter((value): value is string => Boolean(value))
+    .slice(-3);
+  const workbenchReplies = visibleMessages
+    .filter((message) => message.senderType === "human_agent" || message.senderType === "ai_agent")
+    .map((message) => message.contentText?.trim())
+    .filter((value): value is string => Boolean(value))
+    .slice(-2);
+
+  const userSummary = userTopics.length
+    ? `用户主要在讨论：${userTopics.join("；")}。`
+    : "用户本轮主要进行了简短互动。";
+  const replySummary = workbenchReplies.length
+    ? `当前回复进展为：${workbenchReplies.join("；")}。`
+    : "当前尚未形成明确回复结论。";
+
+  return `${userSummary}${replySummary}`;
 }
 
 function parseAiAssistantResult(raw: string): AiAssistantResult {

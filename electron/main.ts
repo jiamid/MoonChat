@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, nativeImage } from "electron";
 import { fileURLToPath } from "node:url";
 import { registerAppIpc } from "./ipc/registerAppIpc.js";
 import { AppRuntime } from "./services/runtime.js";
@@ -8,6 +8,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isDev = !app.isPackaged;
+const shouldOpenDevTools = process.env.MOONCHAT_OPEN_DEVTOOLS === "1";
+const isMac = process.platform === "darwin";
 
 let mainWindow: BrowserWindow | null = null;
 let runtime: AppRuntime | null = null;
@@ -16,6 +18,7 @@ async function createWindow() {
   const preloadPath = isDev
     ? path.join(process.cwd(), "electron", "preload.cjs")
     : path.join(__dirname, "preload.js");
+  const appIconPath = path.join(process.cwd(), "logo.png");
 
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -24,6 +27,12 @@ async function createWindow() {
     minHeight: 760,
     backgroundColor: "#101828",
     show: false,
+    ...(isMac
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+        }
+      : {}),
+    ...(!isMac ? { icon: appIconPath } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -33,6 +42,9 @@ async function createWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
+    if (shouldOpenDevTools) {
+      mainWindow?.webContents.openDevTools({ mode: "detach" });
+    }
   });
 
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription) => {
@@ -53,8 +65,18 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  const appIconPath = path.join(process.cwd(), "logo.png");
+  if (isMac) {
+    const icon = nativeImage.createFromPath(appIconPath);
+    if (!icon.isEmpty()) {
+      app.dock?.setIcon(icon);
+    }
+  }
   runtime = await AppRuntime.bootstrap(app.getPath("userData"));
   registerAppIpc(runtime);
+  runtime.conversations.onChanged((payload) => {
+    mainWindow?.webContents.send("conversation:changed", payload);
+  });
   await createWindow();
 
   app.on("activate", async () => {

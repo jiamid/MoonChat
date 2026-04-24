@@ -6,6 +6,11 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from "react";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
+import LightModeIcon from "@mui/icons-material/LightMode";
+import SettingsIcon from "@mui/icons-material/Settings";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import logoSrc from "../logo.png";
 import type {
   AppDashboardSnapshot,
   AppSettings,
@@ -18,8 +23,10 @@ type MessageRoleFilter = "all" | "inbound" | "outbound";
 type MessageSourceFilter = "all" | "telegram" | "moonchat_ai" | "moonchat_human";
 type AppView = "chat" | "ai" | "settings";
 type AiTab = "assistant" | "base" | "style" | "knowledge" | "model";
+type ThemeMode = "light" | "dark";
 
 const defaultSettings: AppSettings = {
+  ui: { themeMode: "dark" },
   telegram: { botToken: "" },
   ai: {
     provider: "openai",
@@ -33,6 +40,7 @@ const defaultSettings: AppSettings = {
 };
 
 export function App() {
+  const isMac = navigator.userAgent.includes("Mac");
   const [view, setView] = useState<AppView>("ai");
   const [aiTab, setAiTab] = useState<AiTab>("assistant");
   const [dashboard, setDashboard] = useState<AppDashboardSnapshot | null>(null);
@@ -54,12 +62,19 @@ export function App() {
   const [aiImageDraft, setAiImageDraft] = useState<{ dataUrl: string; mimeType: string } | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState("");
+  const [participantLabelDraft, setParticipantLabelDraft] = useState("");
+  const [learningConversationId, setLearningConversationId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const aiImageInputRef = useRef<HTMLInputElement | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
+  const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const previousAiMessageCountRef = useRef(0);
+  const previousChatMessageCountRef = useRef(0);
+  const toastTimerRef = useRef<number | null>(null);
+  const liveRefreshRunningRef = useRef(false);
+  const pendingConversationChangeRef = useRef<{ conversationId: string | null } | null>(null);
 
   const selectedConversation =
     conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
@@ -71,6 +86,15 @@ export function App() {
   const channelConversations = conversations.filter(
     (conversation) => conversation.channelType !== "local_ai",
   );
+  const firstChannelConversationId = channelConversations[0]?.id ?? null;
+  const themeMode = settings.ui.themeMode;
+
+  useEffect(() => {
+    document.body.dataset.theme = themeMode;
+    return () => {
+      delete document.body.dataset.theme;
+    };
+  }, [themeMode]);
 
   const filteredConversations = useMemo(() => {
     const keyword = conversationSearch.trim().toLowerCase();
@@ -112,6 +136,10 @@ export function App() {
       return roleMatched && sourceMatched && textMatched;
     });
   }, [messageRoleFilter, messageSearch, messageSourceFilter, messages]);
+  const learnedAtTimestamp =
+    view === "chat" && selectedConversation?.learningStatus === "learned" && selectedConversation.learnedAt
+      ? new Date(selectedConversation.learnedAt).getTime()
+      : null;
 
   async function refreshWorkspace() {
     const [snapshot, conversationList] = await Promise.all([
@@ -122,11 +150,13 @@ export function App() {
     setDashboard(snapshot);
     setConversations(conversationList);
     setSelectedConversationId((current) => {
-      if (current) {
+      if (current && conversationList.some((item) => item.id === current)) {
         return current;
       }
       return conversationList.find((item) => item.channelType !== "local_ai")?.id ?? null;
     });
+
+    return conversationList;
   }
 
   async function refreshSettings() {
@@ -180,14 +210,18 @@ export function App() {
 
   useEffect(() => {
     if (view === "ai" && aiTab === "assistant" && localAiConversation) {
-      setSelectedConversationId(localAiConversation.id);
-      void refreshMessages(localAiConversation.id);
-      void refreshMemories(localAiConversation);
+      setSelectedConversationId((current) =>
+        current === localAiConversation.id ? current : localAiConversation.id,
+      );
     }
     if (view === "chat" && selectedConversation?.channelType === "local_ai") {
-      setSelectedConversationId(channelConversations[0]?.id ?? null);
+      setSelectedConversationId(firstChannelConversationId);
     }
-  }, [aiTab, channelConversations, localAiConversation, selectedConversation?.channelType, view]);
+  }, [aiTab, firstChannelConversationId, localAiConversation, selectedConversation?.channelType, view]);
+
+  useEffect(() => {
+    setParticipantLabelDraft(selectedConversation?.participantLabel ?? "");
+  }, [selectedConversation?.id, selectedConversation?.participantLabel]);
 
   useEffect(() => {
     const hasNewAssistantMessage =
@@ -202,6 +236,114 @@ export function App() {
 
     previousAiMessageCountRef.current = messages.length;
   }, [aiTab, messages, view]);
+
+  useEffect(() => {
+    const hasNewChatMessage =
+      view === "chat" &&
+      messages.length > previousChatMessageCountRef.current;
+
+    if (hasNewChatMessage) {
+      chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+
+    previousChatMessageCountRef.current = messages.length;
+  }, [messages, view]);
+
+  useEffect(() => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+
+    if (!error && !statusMessage) {
+      return;
+    }
+
+    toastTimerRef.current = window.setTimeout(() => {
+      setError(null);
+      setStatusMessage(null);
+      toastTimerRef.current = null;
+    }, error ? 5200 : 2600);
+
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, [error, statusMessage]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const handleConversationChanged = async (payload: { conversationId: string | null }) => {
+      if (disposed) {
+        return;
+      }
+
+      if (view !== "chat" && !(view === "ai" && aiTab === "assistant")) {
+        return;
+      }
+
+      if (liveRefreshRunningRef.current) {
+        pendingConversationChangeRef.current = payload;
+        return;
+      }
+
+      liveRefreshRunningRef.current = true;
+
+      try {
+        const conversationList = await refreshWorkspace();
+        if (disposed) {
+          return;
+        }
+
+        const fallbackConversationId =
+          conversationList.find((item) =>
+            view === "chat" ? item.channelType !== "local_ai" : item.channelType === "local_ai",
+          )?.id ?? null;
+        const nextSelectedConversationId =
+          selectedConversationId && conversationList.some((item) => item.id === selectedConversationId)
+            ? selectedConversationId
+            : fallbackConversationId;
+        const nextConversation =
+          conversationList.find((item) => item.id === nextSelectedConversationId) ?? null;
+
+        if (nextSelectedConversationId) {
+          await refreshMessages(nextSelectedConversationId);
+        } else {
+          setMessages([]);
+        }
+
+        if (nextConversation) {
+          await refreshMemories(nextConversation);
+        } else {
+          setMemories([]);
+        }
+      } catch (pushRefreshError) {
+        if (!disposed) {
+          console.error("Failed to refresh pushed conversation change", pushRefreshError);
+        }
+      } finally {
+        liveRefreshRunningRef.current = false;
+
+        if (pendingConversationChangeRef.current) {
+          const pendingPayload = pendingConversationChangeRef.current;
+          pendingConversationChangeRef.current = null;
+          void handleConversationChanged(pendingPayload);
+        }
+      }
+    };
+
+    const unsubscribe = window.moonchat.onConversationChanged((payload) => {
+      void handleConversationChanged(payload);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [selectedConversationId, view, aiTab]);
 
   async function handleSendMessage() {
     const targetConversationId =
@@ -337,6 +479,7 @@ export function App() {
     setStatusMessage(null);
     try {
       const saved = await window.moonchat.updateSettings({
+        ui: settingsDraft.ui,
         telegram: settingsDraft.telegram,
         ai: {
           provider: settingsDraft.ai.provider.trim() || "openai",
@@ -363,6 +506,7 @@ export function App() {
     setStatusMessage(null);
     try {
       const saved = await window.moonchat.updateSettings({
+        ui: settingsDraft.ui,
         telegram: { botToken: settingsDraft.telegram.botToken.trim() },
         ai: settingsDraft.ai,
       });
@@ -392,6 +536,88 @@ export function App() {
       setError(saveError instanceof Error ? saveError.message : "保存 AI 记忆失败。");
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleThemeModeChange(nextThemeMode: ThemeMode) {
+    if (nextThemeMode === settings.ui.themeMode) {
+      return;
+    }
+
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const saved = await window.moonchat.updateSettings({
+        ...settings,
+        ui: { themeMode: nextThemeMode },
+      });
+      setSettings(saved);
+      setSettingsDraft(saved);
+      setStatusMessage(nextThemeMode === "dark" ? "已切换到暗黑模式。" : "已切换到明亮模式。");
+    } catch (themeError) {
+      setError(themeError instanceof Error ? themeError.message : "切换主题失败。");
+    }
+  }
+
+  async function handleSaveParticipantLabel() {
+    if (!selectedConversation) {
+      return;
+    }
+
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await window.moonchat.updateParticipantLabel(
+        selectedConversation.id,
+        participantLabelDraft.trim(),
+      );
+      setStatusMessage("联系方式已保存。");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "保存联系方式失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleTriggerLearning() {
+    if (!selectedConversation) {
+      return;
+    }
+
+    if (selectedConversation.learningStatus === "learned") {
+      setStatusMessage("这个会话已经学习过了。");
+      return;
+    }
+
+    if (selectedConversation.learningStatus === "running" || learningConversationId === selectedConversation.id) {
+      return;
+    }
+
+    setLearningConversationId(selectedConversation.id);
+    setError(null);
+    setStatusMessage(null);
+
+    try {
+      const result = await window.moonchat.triggerLearning(selectedConversation.id);
+      await refreshWorkspace();
+
+      if (result.status === "already_learned") {
+        setStatusMessage("这个会话已经学习过了。");
+        return;
+      }
+
+      if (result.status === "running") {
+        setStatusMessage("这个会话正在学习中。");
+        return;
+      }
+
+      setStatusMessage("会话学习完成。");
+      await refreshMemories(selectedConversation);
+    } catch (learningError) {
+      setError(learningError instanceof Error ? learningError.message : "学习会话失败。");
+    } finally {
+      setLearningConversationId(null);
     }
   }
 
@@ -449,40 +675,91 @@ export function App() {
   }
 
   return (
-    <main className="feishu-shell">
+    <main className="feishu-shell" data-theme={themeMode} data-platform={isMac ? "mac" : "other"}>
+      {isMac ? <div className="window-drag-strip" aria-hidden="true" /> : null}
+
+      <div className="toast-layer" aria-live="polite" aria-atomic="true">
+        {error ? (
+          <div className="toast toast-error" role="alert">
+            <div>
+              <strong>操作失败</strong>
+              <p>{error}</p>
+            </div>
+            <button className="toast-close" onClick={() => setError(null)} aria-label="关闭提示">
+              ×
+            </button>
+          </div>
+        ) : null}
+        {!error && statusMessage ? (
+          <div className="toast toast-success" role="status">
+            <div>
+              <strong>已完成</strong>
+              <p>{statusMessage}</p>
+            </div>
+            <button
+              className="toast-close"
+              onClick={() => setStatusMessage(null)}
+              aria-label="关闭提示"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
+      </div>
+
       <aside className="rail">
-        <div className="brand-mark">M</div>
-        <button
-          className={view === "ai" ? "rail-button active" : "rail-button"}
-          onClick={() => setView("ai")}
-        >
-          AI
-        </button>
-        <button
-          className={view === "chat" ? "rail-button active" : "rail-button"}
-          onClick={() => setView("chat")}
-        >
-          聊天
-        </button>
-        <button
-          className={view === "settings" ? "rail-button active" : "rail-button"}
-          onClick={() => setView("settings")}
-        >
-          设置
-        </button>
-        <div className="rail-stats">
-          <span>{dashboard?.counters.conversations ?? 0}</span>
-          <small>会话</small>
+        <div className="rail-main">
+          <div className="brand-mark">
+            <img src={logoSrc} alt="MoonChat" className="brand-mark-image" />
+          </div>
+          <button
+            className={view === "ai" ? "rail-button active" : "rail-button"}
+            onClick={() => setView("ai")}
+          >
+            AI
+          </button>
+          <button
+            className={view === "chat" ? "rail-button active" : "rail-button"}
+            onClick={() => setView("chat")}
+          >
+            消息
+          </button>
+        </div>
+
+        <div className="rail-footer">
+          <button
+            className="rail-button rail-theme-button"
+            onClick={() => void handleThemeModeChange(themeMode === "dark" ? "light" : "dark")}
+            aria-label={themeMode === "dark" ? "切换到明亮模式" : "切换到暗黑模式"}
+            title={themeMode === "dark" ? "切换到明亮模式" : "切换到暗黑模式"}
+          >
+            <span aria-hidden="true">
+              {themeMode === "dark" ? <LightModeIcon fontSize="inherit" /> : <DarkModeIcon fontSize="inherit" />}
+            </span>
+          </button>
+          <button
+            className={
+              view === "settings"
+                ? "rail-button rail-gear-button active"
+                : "rail-button rail-gear-button"
+            }
+            onClick={() => setView("settings")}
+            aria-label="设置"
+            title="设置"
+          >
+            <span aria-hidden="true">
+              <SettingsIcon fontSize="inherit" />
+            </span>
+          </button>
         </div>
       </aside>
 
       {view === "chat" ? (
         <>
-          <section className="session-pane">
+          <section className="session-pane chat-session-pane">
             <header className="pane-header">
               <div>
-                <h1>聊天</h1>
-                <p>渠道会话</p>
+                <h1>消息</h1>
               </div>
               <button className="ghost-button" onClick={() => void refreshWorkspace()}>
                 刷新
@@ -519,16 +796,20 @@ export function App() {
                       setEditingDraft("");
                     }}
                   >
-                    <div className="session-title-row">
-                      <strong>{conversation.title}</strong>
-                      <span>{formatDateTime(conversation.updatedAt)}</span>
+                    <div className="session-card-top">
+                      <div className="session-avatar" aria-hidden="true">
+                        {conversation.title.slice(0, 1).toUpperCase()}
+                      </div>
+                      <div className="session-card-main">
+                        <div className="session-title-row">
+                          <strong>{conversation.title}</strong>
+                        </div>
+                        <p>{conversation.externalUserId}</p>
+                      </div>
                     </div>
-                    <p>{conversation.participantLabel ?? `用户 ${conversation.externalUserId}`}</p>
-                    <div className="session-meta-row">
-                      <span>{conversation.channelType}</span>
-                      <span className={conversation.autoReplyEnabled ? "state-pill on" : "state-pill"}>
-                        {conversation.autoReplyEnabled ? "AI开启" : "人工"}
-                      </span>
+                    <div className="session-meta-row session-meta-row-bottom">
+                      <span className="meta-tag">{describeChannel(conversation.channelType)}</span>
+                      <span className="session-time">{formatConversationTime(conversation.updatedAt)}</span>
                     </div>
                   </button>
                 ))
@@ -536,17 +817,24 @@ export function App() {
             </div>
           </section>
 
-          <section className="conversation-pane">
+          <section className="conversation-pane chat-conversation-pane">
             <header className="conversation-topbar">
-              <div>
+              <div className="conversation-heading">
+                {selectedConversation ? (
+                  <div className="conversation-avatar" aria-hidden="true">
+                    {selectedConversation.title.slice(0, 1).toUpperCase()}
+                  </div>
+                ) : null}
+                <div>
                 <h2>{selectedConversation?.title ?? "选择一个会话"}</h2>
                 <p>
                   {selectedConversation
-                    ? `${selectedConversation.channelType} / ${
+                    ? `${describeChannel(selectedConversation.channelType)} / ${
                         selectedConversation.participantLabel ?? selectedConversation.externalUserId
                       }`
                     : "在左侧选择一个会话开始处理消息"}
                 </p>
+                </div>
               </div>
               {selectedConversation ? (
                 <div className="topbar-actions">
@@ -564,123 +852,144 @@ export function App() {
                   </button>
                   <button
                     className="ghost-button"
-                    onClick={async () => {
-                      await window.moonchat.triggerLearning(selectedConversation.id);
-                      await refreshWorkspace();
-                    }}
+                    onClick={() => void handleTriggerLearning()}
+                    disabled={
+                      selectedConversation.learningStatus === "learned" ||
+                      selectedConversation.learningStatus === "running" ||
+                      learningConversationId === selectedConversation.id
+                    }
                   >
-                    学习会话
+                    {selectedConversation.learningStatus === "running" ||
+                    learningConversationId === selectedConversation.id ? (
+                      <span className="button-inline-status">
+                        <span className="inline-spinner" aria-hidden="true" />
+                        学习中
+                      </span>
+                    ) : (
+                      "学习会话"
+                    )}
                   </button>
                 </div>
               ) : null}
             </header>
 
-            {renderBanners(error, statusMessage)}
+            <section className="chat-thread-panel">
+              {selectedConversation ? (
+                <section className="message-toolbar chat-toolbar-card">
+                  <input
+                    className="search-input"
+                    value={messageSearch}
+                    onChange={(event) => setMessageSearch(event.target.value)}
+                    placeholder="搜索消息内容"
+                  />
+                </section>
+              ) : null}
 
-            {selectedConversation ? (
-              <section className="message-toolbar">
-                <input
-                  className="search-input"
-                  value={messageSearch}
-                  onChange={(event) => setMessageSearch(event.target.value)}
-                  placeholder="搜索消息内容"
-                />
-                <div className="filter-row">
-                  <label className="filter-label">
-                    <span>方向</span>
-                    <select
-                      value={messageRoleFilter}
-                      onChange={(event) =>
-                        setMessageRoleFilter(event.target.value as MessageRoleFilter)
-                      }
-                    >
-                      <option value="all">全部</option>
-                      <option value="inbound">用户发来</option>
-                      <option value="outbound">我方发出</option>
-                    </select>
-                  </label>
-                  <label className="filter-label">
-                    <span>来源</span>
-                    <select
-                      value={messageSourceFilter}
-                      onChange={(event) =>
-                        setMessageSourceFilter(event.target.value as MessageSourceFilter)
-                      }
-                    >
-                      <option value="all">全部</option>
-                      <option value="telegram">Telegram</option>
-                      <option value="moonchat_human">人工</option>
-                      <option value="moonchat_ai">AI</option>
-                    </select>
-                  </label>
-                </div>
-              </section>
-            ) : null}
-
-            <div className="message-canvas">
-              {!selectedConversation ? (
-                <EmptyState title="还没有打开会话" description="选择左侧会话后，在这里查看与回复消息。" />
-              ) : filteredMessages.length === 0 ? (
-                <EmptyState title="没有匹配的消息" description="可以清空筛选条件，或等待新消息进来。" />
-              ) : (
-                groupMessagesByDay(filteredMessages).map((group) => (
-                  <div key={group.label} className="message-group">
-                    <div className="message-group-label">{group.label}</div>
-                    {group.items.map((message) =>
-                      renderMessageBubble({
-                        message,
-                        editingDraft,
-                        editingMessageId,
-                        onCancelEdit: () => {
-                          setEditingMessageId(null);
-                          setEditingDraft("");
-                        },
-                        onChangeEdit: setEditingDraft,
-                        onDelete: handleDeleteMessage,
-                        onEdit: (id, text) => {
-                          setEditingMessageId(id);
-                          setEditingDraft(text);
-                        },
-                        onSaveEdit: handleSaveEdit,
-                      }),
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-
-            <footer className="composer">
-              <textarea
-                rows={4}
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={handleComposerKeyDown}
-                placeholder={selectedConversation ? "输入人工回复内容" : "先选择会话"}
-                disabled={!selectedConversation || isBusy}
-              />
-              <div className="composer-actions">
-                <span>Telegram 会话会同时发回 Telegram，并写入本地记录。</span>
-                <button
-                  className="primary-button"
-                  onClick={() => void handleSendMessage()}
-                  disabled={!selectedConversation || !draft.trim() || isBusy}
-                >
-                  发送
-                </button>
+              <div className="message-canvas chat-message-canvas">
+                {!selectedConversation ? (
+                  <EmptyState title="还没有打开会话" description="选择左侧会话后，在这里查看与回复消息。" />
+                ) : filteredMessages.length === 0 ? (
+                  <EmptyState title="没有匹配的消息" description="可以清空筛选条件，或等待新消息进来。" />
+                ) : (
+                  <>
+                    {selectedConversation.learningStatus === "running" ? (
+                      <div className="thread-status-banner">
+                        <span className="inline-spinner" aria-hidden="true" />
+                        该会话正在学习中
+                      </div>
+                    ) : null}
+                    {groupMessagesByDay(filteredMessages).map((group) => (
+                      <div key={group.label} className="message-group">
+                        <div className="message-group-label">{group.label}</div>
+                        {group.items.map((message) =>
+                          renderMessageBubble({
+                            message,
+                            editingDraft,
+                            editingMessageId,
+                            showLearnedBadge:
+                              learnedAtTimestamp !== null &&
+                              new Date(message.createdAt).getTime() <= learnedAtTimestamp,
+                            onCancelEdit: () => {
+                              setEditingMessageId(null);
+                              setEditingDraft("");
+                            },
+                            onChangeEdit: setEditingDraft,
+                            onDelete: handleDeleteMessage,
+                            onEdit: (id, text) => {
+                              setEditingMessageId(id);
+                              setEditingDraft(text);
+                            },
+                            onSaveEdit: handleSaveEdit,
+                          }),
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+                <div ref={chatMessagesEndRef} />
               </div>
-            </footer>
+
+              <footer className="composer chat-composer">
+                <textarea
+                  rows={4}
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                  placeholder={selectedConversation ? "输入人工回复内容" : "先选择会话"}
+                  disabled={!selectedConversation || isBusy}
+                />
+                <div className="composer-actions">
+                  <span>Telegram 会话会同时发回 Telegram，并写入本地记录。</span>
+                  <button
+                    className="primary-button"
+                    onClick={() => void handleSendMessage()}
+                    disabled={!selectedConversation || !draft.trim() || isBusy}
+                  >
+                    发送
+                  </button>
+                </div>
+              </footer>
+            </section>
           </section>
 
-          <aside className="detail-pane">
-            <section className="detail-card">
+          <aside className="detail-pane chat-detail-pane">
+            <section className="detail-card detail-hero-card">
               <h3>会话信息</h3>
               {selectedConversation ? (
-                <div className="detail-list">
-                  <p><span>标题</span>{selectedConversation.title}</p>
-                  <p><span>渠道</span>{describeChannel(selectedConversation.channelType)}</p>
-                  <p><span>用户</span>{selectedConversation.externalUserId}</p>
-                  <p><span>标签</span>{selectedConversation.participantLabel ?? "未命名"}</p>
-                </div>
+                <>
+                  <div className="detail-hero">
+                    <div className="detail-avatar" aria-hidden="true">
+                      {selectedConversation.title.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div>
+                      <strong>{selectedConversation.title}</strong>
+                      <p>{selectedConversation.participantLabel ?? "未命名联系人"}</p>
+                    </div>
+                  </div>
+                  <div className="detail-list">
+                    <p><span>标题</span>{selectedConversation.title}</p>
+                    <p><span>渠道</span>{describeChannel(selectedConversation.channelType)}</p>
+                    <p><span>用户</span>{selectedConversation.externalUserId}</p>
+                  </div>
+                  <div className="detail-editor">
+                    <label className="settings-field">
+                      <span>联系方式 / 备注</span>
+                      <input
+                        value={participantLabelDraft}
+                        onChange={(event) => setParticipantLabelDraft(event.target.value)}
+                        placeholder="手动补充手机号、微信、备注名"
+                        disabled={isBusy}
+                      />
+                    </label>
+                    <button
+                      className="primary-button"
+                      onClick={() => void handleSaveParticipantLabel()}
+                      disabled={isBusy}
+                    >
+                      保存
+                    </button>
+                  </div>
+                </>
               ) : (
                 <EmptyState title="暂无会话" description="选中后可查看基本信息。" />
               )}
@@ -725,7 +1034,15 @@ export function App() {
             </div>
           </aside>
 
-          <section className="ai-main">
+          <section
+            className={
+              aiTab === "assistant"
+                ? "ai-main ai-main-assistant"
+                : aiTab === "base" || aiTab === "style" || aiTab === "knowledge"
+                  ? "ai-main ai-main-memory"
+                  : "ai-main"
+            }
+          >
             {aiTab === "assistant" ? (
               <section
                 className={
@@ -738,7 +1055,7 @@ export function App() {
                   <>
                     <div className="assistant-chat-header">
                       <div>
-                        <h2>AI 助手</h2>
+                        <h2>MoonChat AI</h2>
                         <p>直接对话、调策略、改记忆。你也可以发图片让 AI 一起理解。</p>
                       </div>
                       <button
@@ -855,12 +1172,10 @@ export function App() {
                       发送
                     </button>
                   </div>
-                  {error ? <div className="assistant-inline-feedback">{error}</div> : null}
                 </footer>
               </section>
             ) : aiTab === "base" ? (
               <>
-                {renderBanners(error, statusMessage)}
               <MemoryEditor
                 title="基础记忆"
                 description="定义 AI 的身份、边界、原则和长期行为约束。"
@@ -873,7 +1188,6 @@ export function App() {
               </>
             ) : aiTab === "style" ? (
               <>
-                {renderBanners(error, statusMessage)}
               <MemoryEditor
                 title="风格记忆"
                 description="定义说话方式、长度偏好、情绪风格、常用表达。"
@@ -886,7 +1200,6 @@ export function App() {
               </>
             ) : aiTab === "knowledge" ? (
               <>
-                {renderBanners(error, statusMessage)}
               <MemoryEditor
                 title="知识记忆"
                 description="沉淀产品信息、FAQ、规则、业务知识和常见判断依据。"
@@ -899,7 +1212,6 @@ export function App() {
               </>
             ) : (
               <>
-                {renderBanners(error, statusMessage)}
                 <article className="settings-panel">
                 <div className="pane-header">
                   <div>
@@ -1006,8 +1318,22 @@ export function App() {
                 <p>这里保留客户端级配置</p>
               </div>
             </div>
-            {renderBanners(error, statusMessage)}
             <div className="settings-grid">
+              <label className="settings-field">
+                <span>界面主题</span>
+                <select
+                  value={settingsDraft.ui.themeMode}
+                  onChange={(event) =>
+                    setSettingsDraft((current) => ({
+                      ...current,
+                      ui: { themeMode: event.target.value as ThemeMode },
+                    }))
+                  }
+                >
+                  <option value="dark">暗黑模式</option>
+                  <option value="light">明亮模式</option>
+                </select>
+              </label>
               <label className="settings-field settings-field-wide">
                 <span>Telegram Bot Token</span>
                 <input
@@ -1024,7 +1350,7 @@ export function App() {
             </div>
             <div className="settings-actions">
               <button className="primary-button" onClick={() => void handleSaveTelegramSettings()}>
-                保存 Telegram 配置
+                保存客户端设置
               </button>
             </div>
           </article>
@@ -1048,17 +1374,22 @@ function MemoryEditor({
   onSave: () => void;
 }) {
   return (
-    <article className="settings-panel">
+    <article className="settings-panel memory-editor-panel">
       <div className="pane-header">
         <div>
           <h1>{title}</h1>
           <p>{description}</p>
         </div>
       </div>
-      <div className="settings-grid">
-        <label className="settings-field settings-field-wide">
+      <div className="settings-grid memory-editor-grid">
+        <label className="settings-field settings-field-wide memory-editor-field">
           <span>{title}内容</span>
-          <textarea rows={14} value={value} onChange={(event) => onChange(event.target.value)} />
+          <textarea
+            className="memory-editor-textarea"
+            rows={14}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+          />
         </label>
       </div>
       <div className="settings-actions">
@@ -1075,6 +1406,7 @@ function renderMessageBubble({
   layout = "default",
   editingDraft,
   editingMessageId,
+  showLearnedBadge = false,
   onCancelEdit,
   onChangeEdit,
   onDelete,
@@ -1085,6 +1417,7 @@ function renderMessageBubble({
   layout?: "default" | "assistant";
   editingDraft: string;
   editingMessageId: string | null;
+  showLearnedBadge?: boolean;
   onCancelEdit: () => void;
   onChangeEdit: (value: string) => void;
   onDelete: (messageId: string) => Promise<void>;
@@ -1094,6 +1427,11 @@ function renderMessageBubble({
   const isOutbound =
     layout === "assistant" ? message.senderType === "user" : message.messageRole === "outbound";
   const isEditing = editingMessageId === message.id;
+  const canManageMessage =
+    layout === "default" &&
+    isOutbound &&
+    !message.isDeleted &&
+    (message.senderType === "human_agent" || message.senderType === "ai_agent");
 
   return (
     <div
@@ -1104,16 +1442,22 @@ function renderMessageBubble({
           : `chat-bubble inbound ${layout === "assistant" ? "assistant-bubble ai" : ""}`.trim()
       }
     >
+      {showLearnedBadge && layout === "default" ? (
+        <span className="bubble-learned-badge" title="该消息所在会话已学习" aria-label="该消息所在会话已学习">
+          <AutoAwesomeIcon fontSize="inherit" />
+        </span>
+      ) : null}
       <div className="bubble-meta">
         {layout === "assistant" ? (
           <>
             {!isOutbound ? <span className="meta-pill">MoonChat AI</span> : null}
             <span>{formatDateTime(message.createdAt)}</span>
           </>
+        ) : !isOutbound ? (
+          <span>{formatDateTime(message.createdAt)}</span>
         ) : (
           <>
-            <span className="meta-pill">{labelSender(message.senderType)}</span>
-            <span className="meta-pill">{describeSource(message.sourceType)}</span>
+            <span className="meta-pill">{labelWorkbenchSender(message.senderType)}</span>
             <span>{formatDateTime(message.createdAt)}</span>
           </>
         )}
@@ -1144,7 +1488,7 @@ function renderMessageBubble({
           <p className={message.isDeleted ? "message-text deleted" : "message-text"}>
             {message.contentText || (message.attachmentImageDataUrl ? " " : "")}
           </p>
-          {!message.isDeleted ? (
+          {canManageMessage ? (
             <div className="message-actions">
               {!message.attachmentImageDataUrl ? (
                 <button className="text-button" onClick={() => onEdit(message.id, message.contentText)}>
@@ -1162,15 +1506,6 @@ function renderMessageBubble({
   );
 }
 
-function renderBanners(error: string | null, statusMessage: string | null) {
-  return (
-    <>
-      {error ? <section className="error-banner">{error}</section> : null}
-      {statusMessage ? <section className="status-banner">{statusMessage}</section> : null}
-    </>
-  );
-}
-
 function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="empty-state">
@@ -1185,6 +1520,11 @@ function labelSender(senderType: string) {
   if (senderType === "human_agent") return "人工";
   if (senderType === "ai_agent") return "AI";
   return senderType;
+}
+
+function labelWorkbenchSender(senderType: string) {
+  if (senderType === "ai_agent") return "AI";
+  return "人工";
 }
 
 function describeSource(sourceType: string) {
@@ -1219,6 +1559,20 @@ function formatDateTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatConversationTime(value: string) {
+  const date = new Date(value);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+
+  return new Intl.DateTimeFormat("zh-CN", sameDay ? {
+    hour: "2-digit",
+    minute: "2-digit",
+  } : {
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 function groupMessagesByDay(messages: ConversationMessage[]) {

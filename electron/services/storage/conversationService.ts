@@ -3,9 +3,11 @@ import type { DatabaseService } from "./databaseService.js";
 import {
   conversationAiSettings,
   conversations,
+  learningJobs,
   messageDeletions,
   messageEdits,
   messages,
+  memories,
 } from "../../../src/shared/db/schema.js";
 import type {
   ConversationMessage,
@@ -13,7 +15,20 @@ import type {
 } from "../../../src/shared/contracts.js";
 
 export class ConversationService {
+  private readonly listeners = new Set<(payload: { conversationId: string | null }) => void>();
+
   constructor(private readonly database: DatabaseService) {}
+
+  onChanged(listener: (payload: { conversationId: string | null }) => void) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  notifyChanged(conversationId: string | null) {
+    this.emitChanged(conversationId);
+  }
 
   async ensureLocalAiConversation() {
     const existing = await this.database.db.query.conversations.findFirst({
@@ -65,9 +80,36 @@ export class ConversationService {
       )
       .orderBy(desc(conversations.updatedAt));
 
+    const [summaryMemories, runningJobs] = await Promise.all([
+      this.database.db.query.memories.findMany({
+        where: and(
+          eq(memories.memoryScope, "conversation"),
+          eq(memories.memoryType, "summary"),
+        ),
+      }),
+      this.database.db.query.learningJobs.findMany({
+        where: eq(learningJobs.status, "running"),
+      }),
+    ]);
+
+    const summaryByConversationId = new Map(
+      summaryMemories.map((memory) => [memory.scopeRefId, memory.updatedAt] as const),
+    );
+    const runningConversationIds = new Set(
+      runningJobs
+        .map((job) => job.targetConversationId)
+        .filter((conversationId): conversationId is string => Boolean(conversationId)),
+    );
+
     return rows.map((row) => ({
       ...row,
       autoReplyEnabled: Boolean(row.autoReplyEnabled),
+      learningStatus: runningConversationIds.has(row.id)
+        ? "running"
+        : summaryByConversationId.has(row.id)
+          ? "learned"
+          : "idle",
+      learnedAt: summaryByConversationId.get(row.id) ?? null,
     }));
   }
 
@@ -110,6 +152,7 @@ export class ConversationService {
         .update(conversationAiSettings)
         .set({ autoReplyEnabled: enabled ? 1 : 0, updatedAt: new Date().toISOString() })
         .where(eq(conversationAiSettings.conversationId, conversationId));
+      this.emitChanged(conversationId);
       return;
     }
 
@@ -118,6 +161,7 @@ export class ConversationService {
       autoReplyEnabled: enabled ? 1 : 0,
       replyMode: "manual",
     });
+    this.emitChanged(conversationId);
   }
 
   async appendInboundTelegramMessage(input: {
@@ -136,6 +180,45 @@ export class ConversationService {
       contentType: "text",
       messageRole: "inbound",
     });
+
+    await this.touchConversation(input.conversationId);
+  }
+
+  async upsertInboundTelegramMessageEdit(input: {
+    conversationId: string;
+    externalMessageId: string;
+    senderId: string;
+    text: string;
+  }) {
+    const existing = await this.database.db.query.messages.findFirst({
+      where: and(
+        eq(messages.conversationId, input.conversationId),
+        eq(messages.externalMessageId, input.externalMessageId),
+      ),
+    });
+
+    if (!existing) {
+      await this.appendInboundTelegramMessage(input);
+      return;
+    }
+
+    if (existing.isDeleted) {
+      return;
+    }
+
+    await this.database.db.insert(messageEdits).values({
+      messageId: existing.id,
+      previousText: existing.contentText,
+      editedBy: input.senderId,
+    });
+
+    await this.database.db
+      .update(messages)
+      .set({
+        contentText: input.text,
+        editedAt: new Date().toISOString(),
+      })
+      .where(eq(messages.id, existing.id));
 
     await this.touchConversation(input.conversationId);
   }
@@ -225,6 +308,12 @@ export class ConversationService {
     await this.touchConversation(existing.conversationId);
   }
 
+  async getMessage(messageId: string) {
+    return this.database.db.query.messages.findFirst({
+      where: eq(messages.id, messageId),
+    });
+  }
+
   async deleteMessage(input: {
     messageId: string;
     deletedBy: string;
@@ -292,11 +381,21 @@ export class ConversationService {
     const existing = await this.database.db.query.conversations.findFirst({
       where: and(
         eq(conversations.channelType, "telegram"),
-        eq(conversations.externalUserId, input.externalUserId),
+        eq(conversations.externalChatId, input.chatId),
       ),
     });
 
     if (existing) {
+      await this.database.db
+        .update(conversations)
+        .set({
+          title: input.title,
+          externalUserId: input.externalUserId,
+          participantLabel: input.username ?? input.title,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(conversations.id, existing.id));
+      this.emitChanged(existing.id);
       return existing;
     }
 
@@ -317,6 +416,7 @@ export class ConversationService {
       replyMode: "manual",
     });
 
+    this.emitChanged(conversation.id);
     return conversation;
   }
 
@@ -333,6 +433,21 @@ export class ConversationService {
     });
   }
 
+  async updateParticipantLabel(input: {
+    conversationId: string;
+    participantLabel: string | null;
+  }) {
+    await this.database.db
+      .update(conversations)
+      .set({
+        participantLabel: input.participantLabel,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(conversations.id, input.conversationId));
+
+    this.emitChanged(input.conversationId);
+  }
+
   async clearConversationMessages(conversationId: string) {
     await this.database.db.delete(messages).where(eq(messages.conversationId, conversationId));
     await this.touchConversation(conversationId);
@@ -343,5 +458,12 @@ export class ConversationService {
       .update(conversations)
       .set({ updatedAt: new Date().toISOString() })
       .where(eq(conversations.id, conversationId));
+    this.emitChanged(conversationId);
+  }
+
+  private emitChanged(conversationId: string | null) {
+    for (const listener of this.listeners) {
+      listener({ conversationId });
+    }
   }
 }

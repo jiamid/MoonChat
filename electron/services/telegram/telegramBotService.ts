@@ -5,22 +5,10 @@ import type { AiOrchestratorService } from "../orchestration/aiOrchestratorServi
 export class TelegramBotService {
   private bot: TelegramBot | null = null;
   private botToken = "";
-
-  constructor(
-    private readonly conversations: ConversationService,
-    private readonly ai: AiOrchestratorService,
-  ) {}
-
-  async start(token?: string) {
-    const nextToken = token ?? this.botToken;
-    if (!nextToken) {
-      return;
-    }
-
-    this.botToken = nextToken;
-    this.bot = new TelegramBot(nextToken, { polling: true });
-    this.bot.on("message", async (message) => {
-      if (!message.text || !message.from) {
+  private readonly processMessage = async (message: TelegramBot.Message, isEdited = false) => {
+    try {
+      const inboundText = message.text ?? message.caption;
+      if (!inboundText || !message.from) {
         return;
       }
 
@@ -31,23 +19,86 @@ export class TelegramBotService {
         username: message.from.username,
       });
 
-      await this.conversations.appendInboundTelegramMessage({
-        conversationId: conversation.id,
-        externalMessageId: String(message.message_id),
-        senderId: String(message.from.id),
-        text: message.text,
-      });
-
-      const reply = await this.ai.handlePotentialAutoReply({
-        conversationId: conversation.id,
-        senderId: String(message.from.id),
-        inboundText: message.text,
-      });
-
-      if (reply && this.bot) {
-        await this.bot.sendMessage(message.chat.id, reply);
+      if (isEdited) {
+        await this.conversations.upsertInboundTelegramMessageEdit({
+          conversationId: conversation.id,
+          externalMessageId: String(message.message_id),
+          senderId: String(message.from.id),
+          text: inboundText,
+        });
+      } else {
+        await this.conversations.appendInboundTelegramMessage({
+          conversationId: conversation.id,
+          externalMessageId: String(message.message_id),
+          senderId: String(message.from.id),
+          text: inboundText,
+        });
       }
+
+      if (!isEdited) {
+        const reply = await this.ai.handlePotentialAutoReply({
+          conversationId: conversation.id,
+          senderId: String(message.from.id),
+          inboundText,
+        });
+
+        if (reply && this.bot) {
+          await this.bot.sendMessage(message.chat.id, reply);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to process Telegram message", {
+        error,
+        messageId: message.message_id,
+        chatId: message.chat.id,
+      });
+    }
+  };
+  private readonly onMessage = async (message: TelegramBot.Message) => {
+    await this.processMessage(message, false);
+  };
+  private readonly onEditedMessage = async (message: TelegramBot.Message) => {
+    await this.processMessage(message, true);
+  };
+
+  constructor(
+    private readonly conversations: ConversationService,
+    private readonly ai: AiOrchestratorService,
+  ) {}
+
+  async start(token?: string) {
+    const nextToken = (token ?? this.botToken).trim();
+    if (!nextToken) {
+      return;
+    }
+
+    if (this.bot) {
+      await this.stop();
+    }
+
+    this.botToken = nextToken;
+    const bot = new TelegramBot(nextToken, {
+      polling: {
+        autoStart: false,
+        params: {
+          timeout: 10,
+        },
+      },
     });
+
+    bot.on("message", this.onMessage);
+    bot.on("edited_message", this.onEditedMessage);
+    bot.on("polling_error", (error) => {
+      console.error("Telegram polling error", error);
+    });
+    bot.on("webhook_error", (error) => {
+      console.error("Telegram webhook error", error);
+    });
+
+    // A stale webhook on the same bot token can block long polling from receiving updates.
+    await bot.deleteWebHook();
+    await bot.startPolling();
+    this.bot = bot;
   }
 
   async reconfigure(token: string) {
@@ -65,7 +116,13 @@ export class TelegramBotService {
   }
 
   async stop() {
-    await this.bot?.stopPolling();
+    if (!this.bot) {
+      return;
+    }
+
+    this.bot.removeListener("message", this.onMessage);
+    this.bot.removeListener("edited_message", this.onEditedMessage);
+    await this.bot.stopPolling();
     this.bot = null;
   }
 
@@ -75,5 +132,16 @@ export class TelegramBotService {
     }
 
     return this.bot.sendMessage(chatId, text);
+  }
+
+  async editMessage(chatId: string, messageId: string, text: string) {
+    if (!this.bot) {
+      throw new Error("Telegram bot is not started. Please complete the Telegram Bot Token in settings first.");
+    }
+
+    return this.bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: Number(messageId),
+    });
   }
 }

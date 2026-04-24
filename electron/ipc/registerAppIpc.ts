@@ -89,6 +89,27 @@ export function registerAppIpc(runtime: AppRuntime) {
   ipcMain.handle(
     "conversation:update-message",
     async (_event, payload: { messageId: string; nextText: string }) => {
+      const existing = await runtime.conversations.getMessage(payload.messageId);
+      if (!existing) {
+        throw new Error("Message not found.");
+      }
+
+      if (
+        existing.sourceType === "telegram" &&
+        existing.externalMessageId
+      ) {
+        const conversation = await runtime.conversations.getConversation(existing.conversationId);
+        if (!conversation?.externalChatId) {
+          throw new Error("Telegram conversation not found.");
+        }
+
+        await runtime.telegram.editMessage(
+          conversation.externalChatId,
+          existing.externalMessageId,
+          payload.nextText,
+        );
+      }
+
       await runtime.conversations.updateMessage({
         messageId: payload.messageId,
         nextText: payload.nextText,
@@ -114,9 +135,18 @@ export function registerAppIpc(runtime: AppRuntime) {
       return { ok: true };
     },
   );
+  ipcMain.handle(
+    "conversation:update-participant-label",
+    async (_event, payload: { conversationId: string; participantLabel: string }) => {
+      await runtime.conversations.updateParticipantLabel({
+        conversationId: payload.conversationId,
+        participantLabel: payload.participantLabel.trim() || null,
+      });
+      return { ok: true };
+    },
+  );
   ipcMain.handle("learning:trigger", async (_event, conversationId: string) => {
-    await runtime.learning.triggerConversationLearning(conversationId);
-    return { ok: true };
+    return runtime.learning.triggerConversationLearning(conversationId);
   });
   ipcMain.handle(
     "conversation:toggle-auto-reply",

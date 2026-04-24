@@ -6,6 +6,8 @@ export interface ConversationSummary {
   externalChatId: string | null;
   participantLabel: string | null;
   autoReplyEnabled: boolean;
+  learningStatus: "idle" | "running" | "learned";
+  learnedAt: string | null;
   updatedAt: string;
 }
 
@@ -45,6 +47,9 @@ export interface AppDashboardSnapshot {
 }
 
 export interface AppSettings {
+  ui: {
+    themeMode: "light" | "dark";
+  };
   telegram: {
     botToken: string;
   };

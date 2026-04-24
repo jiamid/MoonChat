@@ -187,4 +187,14 @@ export class MemoryService {
       isInferred: false,
     });
   }
+
+  async getConversationSummaryMemory(conversationId: string) {
+    return this.database.db.query.memories.findFirst({
+      where: and(
+        eq(memories.memoryScope, "conversation"),
+        eq(memories.memoryType, "summary"),
+        eq(memories.scopeRefId, conversationId),
+      ),
+    });
+  }
 }

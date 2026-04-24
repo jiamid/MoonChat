@@ -4,6 +4,11 @@ import { z } from "zod";
 import type { AppSettings } from "../../../src/shared/contracts.js";
 
 const settingsSchema = z.object({
+  ui: z
+    .object({
+      themeMode: z.enum(["light", "dark"]).default("dark"),
+    })
+    .default({ themeMode: "dark" }),
   telegram: z.object({
     botToken: z.string().default(""),
   }),
@@ -33,6 +38,9 @@ export class AppSettingsService {
   static async bootstrap(dataDir: string) {
     const settingsPath = path.join(dataDir, "settings.json");
     const defaultSettings = settingsSchema.parse({
+      ui: {
+        themeMode: "dark",
+      },
       telegram: {
         botToken: "",
       },

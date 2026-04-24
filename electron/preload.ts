@@ -44,13 +44,34 @@ const api = {
     ipcRenderer.invoke("conversation:delete-message", { messageId }),
   clearConversationMessages: (conversationId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("conversation:clear-messages", { conversationId }),
-  triggerLearning: (conversationId: string): Promise<{ ok: boolean }> =>
+  updateParticipantLabel: (
+    conversationId: string,
+    participantLabel: string,
+  ): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("conversation:update-participant-label", {
+      conversationId,
+      participantLabel,
+    }),
+  triggerLearning: (
+    conversationId: string,
+  ): Promise<{ status: "started" | "running" | "already_learned" }> =>
     ipcRenderer.invoke("learning:trigger", conversationId),
   toggleAutoReply: (
     conversationId: string,
     enabled: boolean,
   ): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("conversation:toggle-auto-reply", { conversationId, enabled }),
+  onConversationChanged: (
+    listener: (payload: { conversationId: string | null }) => void,
+  ): (() => void) => {
+    const wrappedListener = (_event: unknown, payload: { conversationId: string | null }) => {
+      listener(payload);
+    };
+    ipcRenderer.on("conversation:changed", wrappedListener);
+    return () => {
+      ipcRenderer.removeListener("conversation:changed", wrappedListener);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("moonchat", api);

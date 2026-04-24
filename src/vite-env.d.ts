@@ -29,7 +29,16 @@ interface Window {
     updateMessage: (messageId: string, nextText: string) => Promise<{ ok: boolean }>;
     deleteMessage: (messageId: string) => Promise<{ ok: boolean }>;
     clearConversationMessages: (conversationId: string) => Promise<{ ok: boolean }>;
-    triggerLearning: (conversationId: string) => Promise<{ ok: boolean }>;
+    updateParticipantLabel: (
+      conversationId: string,
+      participantLabel: string,
+    ) => Promise<{ ok: boolean }>;
+    triggerLearning: (
+      conversationId: string,
+    ) => Promise<{ status: "started" | "running" | "already_learned" }>;
     toggleAutoReply: (conversationId: string, enabled: boolean) => Promise<{ ok: boolean }>;
+    onConversationChanged: (
+      listener: (payload: { conversationId: string | null }) => void,
+    ) => () => void;
   };
 }
