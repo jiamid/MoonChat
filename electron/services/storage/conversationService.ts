@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
 import type { DatabaseService } from "./databaseService.js";
 import {
   conversationAiSettings,
@@ -67,6 +67,7 @@ export class ConversationService {
         id: conversations.id,
         title: conversations.title,
         channelType: conversations.channelType,
+        channelId: conversations.channelId,
         externalUserId: conversations.externalUserId,
         externalChatId: conversations.externalChatId,
         participantLabel: conversations.participantLabel,
@@ -169,13 +170,14 @@ export class ConversationService {
     externalMessageId: string;
     senderId: string;
     text: string;
+    sourceType?: string;
   }) {
     await this.database.db.insert(messages).values({
       conversationId: input.conversationId,
       externalMessageId: input.externalMessageId,
       senderType: "user",
       senderId: input.senderId,
-      sourceType: "telegram",
+      sourceType: input.sourceType ?? "telegram",
       contentText: input.text,
       contentType: "text",
       messageRole: "inbound",
@@ -373,6 +375,7 @@ export class ConversationService {
   }
 
   async findOrCreateTelegramConversation(input: {
+    channelId: string;
     chatId: string;
     title: string;
     externalUserId: string;
@@ -381,6 +384,7 @@ export class ConversationService {
     const existing = await this.database.db.query.conversations.findFirst({
       where: and(
         eq(conversations.channelType, "telegram"),
+        or(eq(conversations.channelId, input.channelId), isNull(conversations.channelId)),
         eq(conversations.externalChatId, input.chatId),
       ),
     });
@@ -390,6 +394,7 @@ export class ConversationService {
         .update(conversations)
         .set({
           title: input.title,
+          channelId: input.channelId,
           externalUserId: input.externalUserId,
           participantLabel: input.username ?? input.title,
           updatedAt: new Date().toISOString(),
@@ -404,9 +409,113 @@ export class ConversationService {
       .values({
         title: input.title,
         channelType: "telegram",
+        channelId: input.channelId,
         externalChatId: input.chatId,
         externalUserId: input.externalUserId,
         participantLabel: input.username ?? input.title,
+      })
+      .returning();
+
+    await this.database.db.insert(conversationAiSettings).values({
+      conversationId: conversation.id,
+      autoReplyEnabled: 0,
+      replyMode: "manual",
+    });
+
+    this.emitChanged(conversation.id);
+    return conversation;
+  }
+
+  async findOrCreateTelegramUserConversation(input: {
+    channelId: string;
+    chatId: string;
+    title: string;
+    externalUserId: string;
+    username?: string | null;
+  }) {
+    const existing = await this.database.db.query.conversations.findFirst({
+      where: and(
+        eq(conversations.channelType, "telegram_user"),
+        or(eq(conversations.channelId, input.channelId), isNull(conversations.channelId)),
+        eq(conversations.externalChatId, input.chatId),
+      ),
+    });
+
+    if (existing) {
+      await this.database.db
+        .update(conversations)
+        .set({
+          title: input.title,
+          channelId: input.channelId,
+          externalUserId: input.externalUserId,
+          participantLabel: input.username ?? input.title,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(conversations.id, existing.id));
+      this.emitChanged(existing.id);
+      return existing;
+    }
+
+    const [conversation] = await this.database.db
+      .insert(conversations)
+      .values({
+        title: input.title,
+        channelType: "telegram_user",
+        channelId: input.channelId,
+        externalChatId: input.chatId,
+        externalUserId: input.externalUserId,
+        participantLabel: input.username ?? input.title,
+      })
+      .returning();
+
+    await this.database.db.insert(conversationAiSettings).values({
+      conversationId: conversation.id,
+      autoReplyEnabled: 0,
+      replyMode: "manual",
+    });
+
+    this.emitChanged(conversation.id);
+    return conversation;
+  }
+
+  async findOrCreateWhatsappConversation(input: {
+    channelId: string;
+    chatId: string;
+    title: string;
+    externalUserId: string;
+  }) {
+    const existing = await this.database.db.query.conversations.findFirst({
+      where: and(
+        eq(conversations.channelType, "whatsapp_personal"),
+        or(eq(conversations.channelId, input.channelId), isNull(conversations.channelId)),
+        eq(conversations.externalChatId, input.chatId),
+      ),
+    });
+
+    if (existing) {
+      await this.database.db
+        .update(conversations)
+        .set({
+          title: input.title,
+          channelId: input.channelId,
+          externalUserId: input.externalUserId,
+          participantLabel: input.title,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(conversations.id, existing.id));
+      this.emitChanged(existing.id);
+      return existing;
+    }
+
+    const [conversation] = await this.database.db
+      .insert(conversations)
+      .values({
+        title: input.title,
+        channelType: "whatsapp_personal",
+        channelId: input.channelId,
+        externalChatId: input.chatId,
+        externalUserId: input.externalUserId,
+        participantLabel: input.title,
       })
       .returning();
 

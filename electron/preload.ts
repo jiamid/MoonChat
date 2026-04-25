@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppDashboardSnapshot,
   AppSettings,
+  ChannelConfig,
   ConversationMessage,
   ConversationSummary,
   MemoryEntry,
@@ -13,6 +14,40 @@ const api = {
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   updateSettings: (settings: AppSettings): Promise<AppSettings> =>
     ipcRenderer.invoke("settings:update", settings),
+  requestTelegramUserCode: (
+    channel: ChannelConfig,
+  ): Promise<{
+    ok: boolean;
+    alreadyAuthorized: boolean;
+    sessionString: string;
+    isCodeViaApp: boolean;
+  }> => ipcRenderer.invoke("telegram-user:request-code", channel),
+  requestWhatsappQr: (
+    channel: ChannelConfig,
+  ): Promise<{
+    ok: boolean;
+    authStatePath: string;
+    qrDataUrl: string;
+    connected: boolean;
+  }> => ipcRenderer.invoke("whatsapp:request-qr", channel),
+  getWhatsappStatus: (
+    channelId: string,
+  ): Promise<{
+    ok: boolean;
+    connected: boolean;
+    needsLogin: boolean;
+    message: string;
+    checkedAt: string;
+  }> => ipcRenderer.invoke("whatsapp:get-status", channelId),
+  getChannelStatus: (
+    channel: ChannelConfig,
+  ): Promise<{
+    ok: boolean;
+    connected: boolean;
+    needsLogin: boolean;
+    message: string;
+    checkedAt: string;
+  }> => ipcRenderer.invoke("channel:get-status", channel),
   listRelevantMemories: (payload: {
     conversationId?: string;
     userId?: string;

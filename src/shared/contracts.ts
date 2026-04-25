@@ -2,6 +2,7 @@ export interface ConversationSummary {
   id: string;
   title: string;
   channelType: string;
+  channelId: string | null;
   externalUserId: string;
   externalChatId: string | null;
   participantLabel: string | null;
@@ -53,6 +54,7 @@ export interface AppSettings {
   telegram: {
     botToken: string;
   };
+  channels: ChannelConfig[];
   ai: {
     provider: string;
     apiKey: string;
@@ -60,7 +62,24 @@ export interface AppSettings {
     model: string;
     temperature: number;
     systemPrompt: string;
+    autoReplySystemPrompt: string;
   };
+}
+
+export interface ChannelConfig {
+  id: string;
+  type: "telegram" | "telegram_user" | "whatsapp_personal";
+  name: string;
+  botToken?: string;
+  apiId?: number;
+  apiHash?: string;
+  phoneNumber?: string;
+  loginCode?: string;
+  twoFactorPassword?: string;
+  sessionString?: string;
+  authStatePath?: string;
+  lastQrDataUrl?: string;
+  enabled: boolean;
 }
 
 export interface MemoryEntry {

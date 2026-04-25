@@ -113,12 +113,29 @@ export class MemoryService {
     return memoryRows
       .filter((memory) => {
         return (
+          memory.memoryScope === "global_ai" ||
           memory.scopeRefId === input.conversationId ||
           (input.userId ? memory.scopeRefId === input.userId : false)
         );
       })
+      .sort((a, b) => {
+        const scopeRank = (scope: string) => {
+          if (scope === "global_ai") return 0;
+          if (scope === "user") return 1;
+          if (scope === "conversation") return 2;
+          return 3;
+        };
+        const rankDelta = scopeRank(a.memoryScope) - scopeRank(b.memoryScope);
+        if (rankDelta !== 0) {
+          return rankDelta;
+        }
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      })
       .slice(0, 20)
-      .map((memory) => `[${memory.memoryType}] ${memory.summary ?? ""}\n${memory.content}`)
+      .map(
+        (memory) =>
+          `[${labelMemoryScope(memory.memoryScope)} / ${memory.memoryType}] ${memory.summary ?? ""}\n${memory.content}`,
+      )
       .join("\n\n");
   }
 
@@ -197,4 +214,11 @@ export class MemoryService {
       ),
     });
   }
+}
+
+function labelMemoryScope(memoryScope: string) {
+  if (memoryScope === "global_ai") return "全局通用记忆";
+  if (memoryScope === "user") return "当前聊天对象记忆";
+  if (memoryScope === "conversation") return "当前会话记忆";
+  return memoryScope;
 }

@@ -7,6 +7,36 @@ interface Window {
     updateSettings: (
       settings: import("./shared/contracts").AppSettings,
     ) => Promise<import("./shared/contracts").AppSettings>;
+    requestTelegramUserCode: (
+      channel: import("./shared/contracts").ChannelConfig,
+    ) => Promise<{
+      ok: boolean;
+      alreadyAuthorized: boolean;
+      sessionString: string;
+      isCodeViaApp: boolean;
+    }>;
+    requestWhatsappQr: (
+      channel: import("./shared/contracts").ChannelConfig,
+    ) => Promise<{
+      ok: boolean;
+      authStatePath: string;
+      qrDataUrl: string;
+      connected: boolean;
+    }>;
+    getWhatsappStatus: (channelId: string) => Promise<{
+      ok: boolean;
+      connected: boolean;
+      needsLogin: boolean;
+      message: string;
+      checkedAt: string;
+    }>;
+    getChannelStatus: (channel: import("./shared/contracts").ChannelConfig) => Promise<{
+      ok: boolean;
+      connected: boolean;
+      needsLogin: boolean;
+      message: string;
+      checkedAt: string;
+    }>;
     listRelevantMemories: (payload: {
       conversationId?: string;
       userId?: string;

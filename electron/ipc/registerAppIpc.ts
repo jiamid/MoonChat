@@ -1,10 +1,23 @@
 import { ipcMain } from "electron";
 import type { AppRuntime } from "../services/runtime.js";
+import type { ChannelConfig } from "../../src/shared/contracts.js";
 
 export function registerAppIpc(runtime: AppRuntime) {
   ipcMain.handle("app:get-dashboard-snapshot", async () => runtime.dashboard.getSnapshot());
   ipcMain.handle("settings:get", async () => runtime.getSettings());
   ipcMain.handle("settings:update", async (_event, settings) => runtime.updateSettings(settings));
+  ipcMain.handle("telegram-user:request-code", async (_event, channel: ChannelConfig) =>
+    runtime.telegramUser.requestLoginCode(channel),
+  );
+  ipcMain.handle("whatsapp:request-qr", async (_event, channel: ChannelConfig) =>
+    runtime.whatsapp.requestQr(channel),
+  );
+  ipcMain.handle("whatsapp:get-status", async (_event, channelId: string) =>
+    runtime.whatsapp.getConnectionStatus(channelId),
+  );
+  ipcMain.handle("channel:get-status", async (_event, channel: ChannelConfig) =>
+    runtime.getChannelStatus(channel),
+  );
   ipcMain.handle("memory:list-relevant", async (_event, payload: { conversationId?: string; userId?: string }) =>
     runtime.memory.listRelevantMemories(payload),
   );
@@ -45,6 +58,7 @@ export function registerAppIpc(runtime: AppRuntime) {
 
       if (conversation.channelType === "telegram" && conversation.externalChatId) {
         const sent = await runtime.telegram.sendManualMessage(
+          conversation.channelId,
           conversation.externalChatId,
           payload.text,
         );
@@ -58,6 +72,42 @@ export function registerAppIpc(runtime: AppRuntime) {
         });
 
         return { ok: true, externalMessageId: String(sent.message_id) };
+      }
+
+      if (conversation.channelType === "telegram_user" && conversation.externalChatId) {
+        const sent = await runtime.telegramUser.sendManualMessage(
+          conversation.channelId,
+          conversation.externalChatId,
+          payload.text,
+        );
+
+        await runtime.conversations.createHumanReply({
+          conversationId: payload.conversationId,
+          senderId: "local-human",
+          text: payload.text,
+          sourceType: "telegram_user",
+          externalMessageId: String(sent.id),
+        });
+
+        return { ok: true, externalMessageId: String(sent.id) };
+      }
+
+      if (conversation.channelType === "whatsapp_personal" && conversation.externalChatId) {
+        const sent = await runtime.whatsapp.sendManualMessage(
+          conversation.channelId,
+          conversation.externalChatId,
+          payload.text,
+        );
+
+        await runtime.conversations.createHumanReply({
+          conversationId: payload.conversationId,
+          senderId: "local-human",
+          text: payload.text,
+          sourceType: "whatsapp_personal",
+          externalMessageId: sent?.key.id ?? undefined,
+        });
+
+        return { ok: true, externalMessageId: sent?.key.id };
       }
 
       if (conversation.channelType === "local_ai") {
@@ -104,6 +154,7 @@ export function registerAppIpc(runtime: AppRuntime) {
         }
 
         await runtime.telegram.editMessage(
+          conversation.channelId,
           conversation.externalChatId,
           existing.externalMessageId,
           payload.nextText,

@@ -8,26 +8,51 @@ import {
 } from "react";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
-import SettingsIcon from "@mui/icons-material/Settings";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import ForumIcon from "@mui/icons-material/Forum";
+import HubIcon from "@mui/icons-material/Hub";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
+import MemoryIcon from "@mui/icons-material/Memory";
+import StyleIcon from "@mui/icons-material/Style";
+import MenuBookIcon from "@mui/icons-material/MenuBook";
+import TuneIcon from "@mui/icons-material/Tune";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
 import logoSrc from "../logo.png";
 import type {
   AppDashboardSnapshot,
   AppSettings,
+  ChannelConfig,
   ConversationMessage,
   ConversationSummary,
   MemoryEntry,
 } from "./shared/contracts";
 
 type MessageRoleFilter = "all" | "inbound" | "outbound";
-type MessageSourceFilter = "all" | "telegram" | "moonchat_ai" | "moonchat_human";
-type AppView = "chat" | "ai" | "settings";
+type MessageSourceFilter =
+  | "all"
+  | "telegram"
+  | "telegram_user"
+  | "whatsapp_personal"
+  | "moonchat_ai"
+  | "moonchat_human";
+type AppView = "chat" | "channels" | "ai";
 type AiTab = "assistant" | "base" | "style" | "knowledge" | "model";
 type ThemeMode = "light" | "dark";
+type ChannelConnectionStatus = {
+  ok: boolean;
+  connected: boolean;
+  needsLogin: boolean;
+  message: string;
+  checkedAt: string;
+};
 
 const defaultSettings: AppSettings = {
   ui: { themeMode: "dark" },
   telegram: { botToken: "" },
+  channels: [],
   ai: {
     provider: "openai",
     apiKey: "",
@@ -36,6 +61,8 @@ const defaultSettings: AppSettings = {
     temperature: 0.4,
     systemPrompt:
       "你是 MoonChat 的 AI 助手，负责在聊天聚合工作台里协助进行自然、稳妥、贴近上下文的回复。",
+    autoReplySystemPrompt:
+      "你正在代表使用者本人回复外部聊天消息。你的目标是模拟使用者的口吻、偏好、知识边界和沟通风格，基于记忆与最近上下文给出自然回复。不要暴露你是 AI，不要提 MoonChat，不要虚构事实；不确定时用简短、保守、可继续追问的方式回复。",
   },
 };
 
@@ -63,8 +90,16 @@ export function App() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState("");
   const [participantLabelDraft, setParticipantLabelDraft] = useState("");
+  const [isAddChannelModalOpen, setIsAddChannelModalOpen] = useState(false);
+  const [newChannelDraft, setNewChannelDraft] = useState<ChannelConfig>(() => createTelegramChannel(1));
+  const [editingChannelDraft, setEditingChannelDraft] = useState<ChannelConfig | null>(null);
+  const [isChatDetailDrawerOpen, setIsChatDetailDrawerOpen] = useState(false);
   const [learningConversationId, setLearningConversationId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [whatsappQrPendingId, setWhatsappQrPendingId] = useState<string | null>(null);
+  const [whatsappQrError, setWhatsappQrError] = useState<string | null>(null);
+  const [whatsappConnectedById, setWhatsappConnectedById] = useState<Record<string, boolean>>({});
+  const [channelStatusById, setChannelStatusById] = useState<Record<string, ChannelConnectionStatus>>({});
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const aiImageInputRef = useRef<HTMLInputElement | null>(null);
@@ -76,6 +111,7 @@ export function App() {
   const toastTimerRef = useRef<number | null>(null);
   const liveRefreshRunningRef = useRef(false);
   const pendingConversationChangeRef = useRef<{ conversationId: string | null } | null>(null);
+  const previousChannelStatusRef = useRef<Record<string, ChannelConnectionStatus>>({});
 
   const selectedConversation =
     conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
@@ -87,6 +123,20 @@ export function App() {
   const channelConversations = conversations.filter(
     (conversation) => conversation.channelType !== "local_ai",
   );
+  const channelNameById = useMemo(
+    () =>
+      new Map(
+        settings.channels.map((channel) => [
+          channel.id,
+          channel.name.trim() || describeChannel(channel.type),
+        ] as const),
+      ),
+    [settings.channels],
+  );
+  const getConversationChannelName = (conversation: ConversationSummary) =>
+    conversation.channelId
+      ? channelNameById.get(conversation.channelId) ?? describeChannel(conversation.channelType)
+      : describeChannel(conversation.channelType);
   const firstChannelConversationId = channelConversations[0]?.id ?? null;
   const themeMode = settings.ui.themeMode;
   const isAssistantView = view === "ai" && aiTab === "assistant";
@@ -110,12 +160,13 @@ export function App() {
         conversation.participantLabel ?? "",
         conversation.externalUserId,
         conversation.channelType,
+        getConversationChannelName(conversation),
       ]
         .join(" ")
         .toLowerCase()
         .includes(keyword);
     });
-  }, [channelConversations, conversationSearch]);
+  }, [channelConversations, channelNameById, conversationSearch]);
 
   const filteredMessages = useMemo(() => {
     const keyword = messageSearch.trim().toLowerCase();
@@ -192,9 +243,81 @@ export function App() {
     await Promise.all([refreshWorkspace(), refreshSettings(), refreshGlobalAiMemories()]);
   }
 
+  async function refreshChannelStatuses(options: { notifyOnDisconnect?: boolean } = {}) {
+    const enabledChannels = settingsDraft.channels.filter((channel) => channel.enabled);
+    if (enabledChannels.length === 0) {
+      setChannelStatusById({});
+      previousChannelStatusRef.current = {};
+      return;
+    }
+
+    const entries = await Promise.all(
+      enabledChannels.map(async (channel) => {
+        try {
+          const status = await window.moonchat.getChannelStatus(channel);
+          return [channel.id, status] as const;
+        } catch {
+          return [
+            channel.id,
+            {
+              ok: false,
+              connected: false,
+              needsLogin: channel.type !== "telegram",
+              message: `${describeChannel(channel.type)} 服务未连接，请检查配置后重试。`,
+              checkedAt: new Date().toISOString(),
+            },
+          ] as const;
+        }
+      }),
+    );
+    const nextStatusById = Object.fromEntries(entries);
+    const previousStatusById = previousChannelStatusRef.current;
+    setChannelStatusById(nextStatusById);
+    setWhatsappConnectedById((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        entries
+          .filter(([channelId]) => settingsDraft.channels.find((channel) => channel.id === channelId)?.type === "whatsapp_personal")
+          .map(([channelId, status]) => [channelId, status.connected]),
+      ),
+    }));
+
+    if (options.notifyOnDisconnect) {
+      const disconnectedChannel = enabledChannels.find((channel) => {
+        const previousStatus = previousStatusById[channel.id];
+        const nextStatus = nextStatusById[channel.id];
+        return previousStatus?.connected && nextStatus && !nextStatus.connected;
+      });
+      if (disconnectedChannel) {
+        const status = nextStatusById[disconnectedChannel.id];
+        setError(`${disconnectedChannel.name || describeChannel(disconnectedChannel.type)} 已掉线。${status?.message ?? "请检查配置后重试。"}`);
+      }
+    }
+
+    previousChannelStatusRef.current = nextStatusById;
+  }
+
   useEffect(() => {
     void refreshAll();
   }, []);
+
+  useEffect(() => {
+    const enabledChannels = settingsDraft.channels.filter((channel) => channel.enabled);
+    if (enabledChannels.length === 0) {
+      setChannelStatusById({});
+      previousChannelStatusRef.current = {};
+      return;
+    }
+
+    void refreshChannelStatuses();
+    const intervalId = window.setInterval(() => {
+      void refreshChannelStatuses({ notifyOnDisconnect: true });
+    }, 30000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [settingsDraft.channels]);
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -293,6 +416,13 @@ export function App() {
       liveRefreshRunningRef.current = true;
 
       try {
+        const shouldRefreshCurrentMessagesFirst =
+          Boolean(payload.conversationId) && payload.conversationId === selectedConversationId;
+
+        if (shouldRefreshCurrentMessagesFirst && payload.conversationId) {
+          await refreshMessages(payload.conversationId);
+        }
+
         const conversationList = await refreshWorkspace();
         if (disposed) {
           return;
@@ -309,10 +439,12 @@ export function App() {
         const nextConversation =
           conversationList.find((item) => item.id === nextSelectedConversationId) ?? null;
 
-        if (nextSelectedConversationId) {
+        if (nextSelectedConversationId && !shouldRefreshCurrentMessagesFirst) {
           await refreshMessages(nextSelectedConversationId);
         } else {
-          setMessages([]);
+          if (!nextSelectedConversationId) {
+            setMessages([]);
+          }
         }
 
         if (nextConversation) {
@@ -344,6 +476,21 @@ export function App() {
       unsubscribe();
     };
   }, [selectedConversationId, view, aiTab]);
+
+  useEffect(() => {
+    if (!selectedConversationId || (view !== "chat" && !isAssistantView)) {
+      return;
+    }
+
+    const refreshVisibleConversation = () => {
+      void Promise.all([refreshWorkspace(), refreshMessages(selectedConversationId)]);
+    };
+    const intervalId = window.setInterval(refreshVisibleConversation, 2500);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isAssistantView, selectedConversationId, view]);
 
   async function handleSendMessage() {
     const targetConversationId = isAssistantView ? activeConversation?.id : selectedConversationId;
@@ -489,13 +636,15 @@ export function App() {
       const saved = await window.moonchat.updateSettings({
         ui: settingsDraft.ui,
         telegram: settingsDraft.telegram,
+        channels: settingsDraft.channels,
         ai: {
-          provider: settingsDraft.ai.provider.trim() || "openai",
+          provider: "openai",
           apiKey: settingsDraft.ai.apiKey.trim(),
           baseUrl: settingsDraft.ai.baseUrl.trim(),
           model: settingsDraft.ai.model.trim(),
           temperature: Number(settingsDraft.ai.temperature),
           systemPrompt: settingsDraft.ai.systemPrompt.trim(),
+          autoReplySystemPrompt: settingsDraft.ai.autoReplySystemPrompt.trim(),
         },
       });
       setSettings(saved);
@@ -508,21 +657,22 @@ export function App() {
     }
   }
 
-  async function handleSaveTelegramSettings() {
+  async function persistChannelSettings(nextChannels: ChannelConfig[], successMessage: string) {
     setIsBusy(true);
     setError(null);
     setStatusMessage(null);
     try {
       const saved = await window.moonchat.updateSettings({
         ui: settingsDraft.ui,
-        telegram: { botToken: settingsDraft.telegram.botToken.trim() },
+        telegram: { botToken: "" },
+        channels: normalizeChannels(nextChannels),
         ai: settingsDraft.ai,
       });
       setSettings(saved);
       setSettingsDraft(saved);
-      setStatusMessage("Telegram 配置已保存并重连。");
+      setStatusMessage(successMessage);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "保存 Telegram 配置失败。");
+      setError(saveError instanceof Error ? saveError.message : "保存渠道配置失败。");
     } finally {
       setIsBusy(false);
     }
@@ -561,7 +711,6 @@ export function App() {
       });
       setSettings(saved);
       setSettingsDraft(saved);
-      setStatusMessage(nextThemeMode === "dark" ? "已切换到暗黑模式。" : "已切换到明亮模式。");
     } catch (themeError) {
       setError(themeError instanceof Error ? themeError.message : "切换主题失败。");
     }
@@ -682,9 +831,614 @@ export function App() {
     void handleSendMessage();
   }
 
+  function openAddChannelModal() {
+    setNewChannelDraft(createTelegramUserChannel(settingsDraft.channels.length + 1));
+    setIsAddChannelModalOpen(true);
+  }
+
+  function closeAddChannelModal() {
+    setIsAddChannelModalOpen(false);
+  }
+
+  function openEditChannelModal(channel: ChannelConfig) {
+    setEditingChannelDraft({ ...channel });
+  }
+
+  function closeEditChannelModal() {
+    setEditingChannelDraft(null);
+  }
+
+  async function addChannelFromModal() {
+    if (!(await ensureWhatsappChannelConnected(newChannelDraft))) {
+      return;
+    }
+    const nextChannels = [...settingsDraft.channels, newChannelDraft];
+    await persistChannelSettings(nextChannels, "渠道已添加并启动监听。");
+    setIsAddChannelModalOpen(false);
+  }
+
+  async function saveEditingChannel() {
+    if (!editingChannelDraft) {
+      return;
+    }
+    if (!(await ensureWhatsappChannelConnected(editingChannelDraft))) {
+      return;
+    }
+
+    const nextChannels = settingsDraft.channels.map((channel) =>
+      channel.id === editingChannelDraft.id ? editingChannelDraft : channel,
+    );
+    await persistChannelSettings(nextChannels, "渠道配置已更新并重启监听。");
+    setEditingChannelDraft(null);
+  }
+
+  async function removeChannel(channelId: string) {
+    const nextChannels = settingsDraft.channels.filter((channel) => channel.id !== channelId);
+    setSettingsDraft((current) => ({
+      ...current,
+      channels: nextChannels,
+    }));
+    await persistChannelSettings(nextChannels, "渠道已删除。");
+  }
+
+  async function requestTelegramUserCode(channel: ChannelConfig, applySession: (sessionString: string) => void) {
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const result = await window.moonchat.requestTelegramUserCode(channel);
+      if (result.alreadyAuthorized && result.sessionString) {
+        applySession(result.sessionString);
+        setStatusMessage("该 Telegram 私人账号已授权，保存渠道即可启动监听。");
+        return;
+      }
+
+      setStatusMessage(
+        result.isCodeViaApp
+          ? "验证码已发送到你的 Telegram App，请填入验证码后保存渠道。"
+          : "验证码已通过短信发送，请填入验证码后保存渠道。",
+      );
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "发送 Telegram 验证码失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function requestWhatsappQr(channel: ChannelConfig, applyQr: (authStatePath: string, qrDataUrl: string) => void) {
+    setIsBusy(true);
+    setWhatsappQrPendingId(channel.id);
+    setWhatsappQrError(null);
+    setWhatsappConnectedById((current) => ({ ...current, [channel.id]: false }));
+    try {
+      const result = await window.moonchat.requestWhatsappQr(channel);
+      applyQr(result.authStatePath, result.qrDataUrl);
+      setWhatsappConnectedById((current) => ({ ...current, [channel.id]: result.connected }));
+      setChannelStatusById((current) => ({
+        ...current,
+        [channel.id]: {
+          ok: true,
+          connected: result.connected,
+          needsLogin: !result.connected,
+          message: result.connected ? "WhatsApp 已连接。" : "等待手机 WhatsApp 扫码登录。",
+          checkedAt: new Date().toISOString(),
+        },
+      }));
+      if (!result.qrDataUrl && !result.connected) {
+        setWhatsappQrError("暂时没有生成二维码，请稍后再试。");
+      }
+      if (!result.qrDataUrl && result.connected) {
+        setWhatsappQrError(null);
+      }
+      if (result.qrDataUrl && !result.connected) {
+        void pollWhatsappConnection(channel.id);
+      }
+    } catch (requestError) {
+      setWhatsappQrError(requestError instanceof Error ? requestError.message : "生成 WhatsApp 二维码失败。");
+    } finally {
+      setWhatsappQrPendingId(null);
+      setIsBusy(false);
+    }
+  }
+
+  async function pollWhatsappConnection(channelId: string) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      try {
+        const status = await window.moonchat.getWhatsappStatus(channelId);
+        setChannelStatusById((current) => ({ ...current, [channelId]: status }));
+        if (status.connected) {
+          setWhatsappConnectedById((current) => ({ ...current, [channelId]: true }));
+          setWhatsappQrError(null);
+          return;
+        }
+      } catch {
+        return;
+      }
+    }
+  }
+
+  async function ensureWhatsappChannelConnected(channel: ChannelConfig) {
+    if (channel.type !== "whatsapp_personal" || !channel.enabled) {
+      return true;
+    }
+    if (whatsappConnectedById[channel.id]) {
+      return true;
+    }
+
+    setIsBusy(true);
+    setWhatsappQrError(null);
+    try {
+      const status = await window.moonchat.getWhatsappStatus(channel.id);
+      setChannelStatusById((current) => ({ ...current, [channel.id]: status }));
+      setWhatsappConnectedById((current) => ({ ...current, [channel.id]: status.connected }));
+      if (status.connected) {
+        return true;
+      }
+      setWhatsappQrError("请先用手机 WhatsApp 扫码并完成登录，再保存渠道。");
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   return (
     <main className="feishu-shell" data-theme={themeMode} data-platform={isMac ? "mac" : "other"}>
       {isMac ? <div className="window-drag-strip" aria-hidden="true" /> : null}
+
+      {isAddChannelModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeAddChannelModal}>
+          <section
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-channel-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="pane-header">
+              <div>
+                <h2 id="add-channel-title">添加渠道</h2>
+              </div>
+            </div>
+            <div className="settings-grid modal-grid">
+              <label className="settings-field settings-field-wide">
+                <span>渠道类型</span>
+                <select
+                  value={newChannelDraft.type}
+                  onChange={(event) =>
+                    setNewChannelDraft((current) =>
+	                      event.target.value === "telegram_user"
+	                        ? {
+	                            ...createTelegramUserChannel(settingsDraft.channels.length + 1),
+	                            id: current.id,
+	                            name:
+	                              current.name.trim() && current.name !== "TelegramBot"
+	                                ? current.name
+	                                : `Telegram 私人账号 ${settingsDraft.channels.length + 1}`,
+	                          }
+	                        : event.target.value === "whatsapp_personal"
+	                          ? {
+	                              ...createWhatsappPersonalChannel(settingsDraft.channels.length + 1),
+	                              id: current.id,
+	                              name:
+	                                current.name.trim() &&
+	                                current.name !== "TelegramBot" &&
+	                                !current.name.startsWith("Telegram 私人账号")
+	                                  ? current.name
+	                                  : `WhatsApp 私人账号 ${settingsDraft.channels.length + 1}`,
+	                            }
+	                        : {
+	                            ...createTelegramChannel(settingsDraft.channels.length + 1),
+	                            id: current.id,
+	                            name:
+	                              current.name.trim() &&
+	                              !current.name.startsWith("Telegram 私人账号") &&
+	                              !current.name.startsWith("WhatsApp 私人账号")
+	                                ? current.name
+	                                : `TelegramBot ${settingsDraft.channels.length + 1}`,
+	                          },
+                    )
+                  }
+                >
+	                  <option value="telegram">TelegramBot</option>
+	                  <option value="telegram_user">Telegram 私人账号</option>
+	                  <option value="whatsapp_personal">WhatsApp 私人账号</option>
+	                </select>
+	              </label>
+              <label className="settings-field">
+                <span>渠道名称</span>
+                <input
+                  value={newChannelDraft.name}
+                  onChange={(event) =>
+                    setNewChannelDraft((current) => ({ ...current, name: event.target.value }))
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>状态</span>
+                <select
+                  value={newChannelDraft.enabled ? "enabled" : "disabled"}
+                  onChange={(event) =>
+                    setNewChannelDraft((current) => ({
+                      ...current,
+                      enabled: event.target.value === "enabled",
+                    }))
+                  }
+                >
+                  <option value="enabled">启用</option>
+                  <option value="disabled">停用</option>
+                </select>
+              </label>
+              {newChannelDraft.type === "telegram" ? (
+                <label className="settings-field settings-field-wide">
+                  <span>Bot Token</span>
+                  <input
+                    type="password"
+                    value={newChannelDraft.botToken ?? ""}
+                    onChange={(event) =>
+                      setNewChannelDraft((current) => ({ ...current, botToken: event.target.value }))
+                    }
+                  />
+                </label>
+              ) : newChannelDraft.type === "telegram_user" ? (
+                <>
+                  <div className="settings-field settings-field-wide helper-card">
+                    <strong>如何申请 api_id / api_hash</strong>
+                    <p>1. 打开 my.telegram.org 并用你的 Telegram 私人账号手机号登录。</p>
+                    <p>2. 进入 API development tools，创建应用，填写任意应用名与短名称。</p>
+                    <p>3. 复制页面里的 api_id 和 api_hash 填到这里。验证码通常会发到 Telegram App。</p>
+                  </div>
+                  <label className="settings-field">
+                    <span>api_id</span>
+                    <input
+                      type="number"
+                      value={newChannelDraft.apiId ?? ""}
+                      onChange={(event) =>
+                        setNewChannelDraft((current) => ({
+                          ...current,
+                          apiId: event.target.value ? Number(event.target.value) : undefined,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>api_hash</span>
+                    <input
+                      type="password"
+                      value={newChannelDraft.apiHash ?? ""}
+                      onChange={(event) =>
+                        setNewChannelDraft((current) => ({ ...current, apiHash: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <label className="settings-field settings-field-wide">
+                    <span>手机号</span>
+                    <input
+                      value={newChannelDraft.phoneNumber ?? ""}
+                      placeholder="+8613800000000"
+                      onChange={(event) =>
+                        setNewChannelDraft((current) => ({ ...current, phoneNumber: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>验证码</span>
+                    <input
+                      value={newChannelDraft.loginCode ?? ""}
+                      onChange={(event) =>
+                        setNewChannelDraft((current) => ({ ...current, loginCode: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>2FA 密码（如有）</span>
+                    <input
+                      type="password"
+                      value={newChannelDraft.twoFactorPassword ?? ""}
+                      onChange={(event) =>
+                        setNewChannelDraft((current) => ({
+                          ...current,
+                          twoFactorPassword: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <div className="settings-field settings-field-wide">
+                    <button
+                      className="ghost-button"
+                      onClick={() =>
+                        void requestTelegramUserCode(newChannelDraft, (sessionString) =>
+                          setNewChannelDraft((current) => ({ ...current, sessionString })),
+                        )
+                      }
+                      disabled={isBusy || !newChannelDraft.apiId || !newChannelDraft.apiHash || !newChannelDraft.phoneNumber}
+                    >
+                      发送验证码
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="settings-field settings-field-wide helper-card">
+                    <strong>WhatsApp 私人账号接入说明</strong>
+                    <p>基于 WhatsApp Web 接入，可能会掉线或受 WhatsApp 风控影响。</p>
+                  </div>
+                  <div
+                    className={
+                      newChannelDraft.lastQrDataUrl
+                        ? "settings-field settings-field-wide qr-preview-card"
+                        : "settings-field settings-field-wide qr-action-card"
+                    }
+                    aria-busy={whatsappQrPendingId === newChannelDraft.id}
+                  >
+                    {newChannelDraft.lastQrDataUrl ? (
+                      <>
+                        <img src={newChannelDraft.lastQrDataUrl} alt="WhatsApp 登录二维码" />
+                        <span>
+                          {whatsappConnectedById[newChannelDraft.id]
+                            ? "已扫码登录，可以保存渠道"
+                            : "手机 WhatsApp → 已关联设备 → 扫码"}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="ghost-button"
+                          onClick={() =>
+                            void requestWhatsappQr(newChannelDraft, (authStatePath, qrDataUrl) =>
+                              setNewChannelDraft((current) => ({
+                                ...current,
+                                authStatePath,
+                                lastQrDataUrl: qrDataUrl,
+                              })),
+                            )
+                          }
+                          disabled={isBusy}
+                        >
+                          {whatsappQrPendingId === newChannelDraft.id ? "生成中..." : "生成二维码"}
+                        </button>
+                        {whatsappQrPendingId === newChannelDraft.id ? (
+                          <span className="qr-loading-text">正在向 WhatsApp 请求二维码</span>
+                        ) : null}
+                        {whatsappQrError ? <span className="qr-error-text">{whatsappQrError}</span> : null}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="settings-actions">
+              <button className="ghost-button" onClick={closeAddChannelModal}>
+                取消
+              </button>
+              <button
+                className="primary-button"
+                onClick={() => void addChannelFromModal()}
+                disabled={isBusy}
+              >
+                添加
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {editingChannelDraft ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeEditChannelModal}>
+          <section
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-channel-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="pane-header">
+              <div>
+                <h2 id="edit-channel-title">编辑渠道</h2>
+              </div>
+            </div>
+            <div className="settings-grid modal-grid">
+              <label className="settings-field settings-field-wide">
+                <span>渠道类型</span>
+                <select value={editingChannelDraft.type} disabled>
+                  <option value="telegram">TelegramBot</option>
+                  <option value="telegram_user">Telegram 私人账号</option>
+                  <option value="whatsapp_personal">WhatsApp 私人账号</option>
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>渠道名称</span>
+                <input
+                  value={editingChannelDraft.name}
+                  onChange={(event) =>
+                    setEditingChannelDraft((current) =>
+                      current ? { ...current, name: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>状态</span>
+                <select
+                  value={editingChannelDraft.enabled ? "enabled" : "disabled"}
+                  onChange={(event) =>
+                    setEditingChannelDraft((current) =>
+                      current
+                        ? { ...current, enabled: event.target.value === "enabled" }
+                        : current,
+                    )
+                  }
+                >
+                  <option value="enabled">启用</option>
+                  <option value="disabled">停用</option>
+                </select>
+              </label>
+              {editingChannelDraft.type === "telegram" ? (
+                <label className="settings-field settings-field-wide">
+                  <span>Bot Token</span>
+                  <input
+                    type="password"
+                    value={editingChannelDraft.botToken ?? ""}
+                    onChange={(event) =>
+                      setEditingChannelDraft((current) =>
+                        current ? { ...current, botToken: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+              ) : editingChannelDraft.type === "telegram_user" ? (
+                <>
+                  <div className="settings-field settings-field-wide helper-card">
+                    <strong>Telegram 私人账号登录说明</strong>
+                    <p>api_id 和 api_hash 来自 my.telegram.org 的 API development tools。</p>
+                    <p>首次登录：先填 api_id、api_hash、手机号并点击发送验证码；收到验证码后填入验证码再保存。</p>
+                    <p>登录成功后会保存 session，后续一般不需要再次输入验证码或 2FA 密码。</p>
+                  </div>
+                  <label className="settings-field">
+                    <span>api_id</span>
+                    <input
+                      type="number"
+                      value={editingChannelDraft.apiId ?? ""}
+                      onChange={(event) =>
+                        setEditingChannelDraft((current) =>
+                          current
+                            ? { ...current, apiId: event.target.value ? Number(event.target.value) : undefined }
+                            : current,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>api_hash</span>
+                    <input
+                      type="password"
+                      value={editingChannelDraft.apiHash ?? ""}
+                      onChange={(event) =>
+                        setEditingChannelDraft((current) =>
+                          current ? { ...current, apiHash: event.target.value } : current,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="settings-field settings-field-wide">
+                    <span>手机号</span>
+                    <input
+                      value={editingChannelDraft.phoneNumber ?? ""}
+                      placeholder="+8613800000000"
+                      onChange={(event) =>
+                        setEditingChannelDraft((current) =>
+                          current ? { ...current, phoneNumber: event.target.value } : current,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>验证码</span>
+                    <input
+                      value={editingChannelDraft.loginCode ?? ""}
+                      onChange={(event) =>
+                        setEditingChannelDraft((current) =>
+                          current ? { ...current, loginCode: event.target.value } : current,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>2FA 密码（如有）</span>
+                    <input
+                      type="password"
+                      value={editingChannelDraft.twoFactorPassword ?? ""}
+                      onChange={(event) =>
+                        setEditingChannelDraft((current) =>
+                          current ? { ...current, twoFactorPassword: event.target.value } : current,
+                        )
+                      }
+                    />
+                  </label>
+                  <div className="settings-field settings-field-wide">
+                    <button
+                      className="ghost-button"
+                      onClick={() =>
+                        void requestTelegramUserCode(editingChannelDraft, (sessionString) =>
+                          setEditingChannelDraft((current) =>
+                            current ? { ...current, sessionString } : current,
+                          ),
+                        )
+                      }
+                      disabled={
+                        isBusy ||
+                        !editingChannelDraft.apiId ||
+                        !editingChannelDraft.apiHash ||
+                        !editingChannelDraft.phoneNumber
+                      }
+                    >
+                      发送验证码
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="settings-field settings-field-wide helper-card">
+                    <strong>WhatsApp 私人账号接入说明</strong>
+                    <p>基于 WhatsApp Web 接入，可能会掉线或受 WhatsApp 风控影响。</p>
+                  </div>
+                  <div
+                    className={
+                      editingChannelDraft.lastQrDataUrl
+                        ? "settings-field settings-field-wide qr-preview-card"
+                        : "settings-field settings-field-wide qr-action-card"
+                    }
+                    aria-busy={whatsappQrPendingId === editingChannelDraft.id}
+                  >
+                    {editingChannelDraft.lastQrDataUrl ? (
+                      <>
+                        <img src={editingChannelDraft.lastQrDataUrl} alt="WhatsApp 登录二维码" />
+                        <span>
+                          {whatsappConnectedById[editingChannelDraft.id]
+                            ? "已扫码登录，可以保存渠道"
+                            : "手机 WhatsApp → 已关联设备 → 扫码"}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="ghost-button"
+                          onClick={() =>
+                            void requestWhatsappQr(editingChannelDraft, (authStatePath, qrDataUrl) =>
+                              setEditingChannelDraft((current) =>
+                                current ? { ...current, authStatePath, lastQrDataUrl: qrDataUrl } : current,
+                              ),
+                            )
+                          }
+                          disabled={isBusy}
+                        >
+                          {whatsappQrPendingId === editingChannelDraft.id ? "生成中..." : "生成二维码"}
+                        </button>
+                        {whatsappQrPendingId === editingChannelDraft.id ? (
+                          <span className="qr-loading-text">正在向 WhatsApp 请求二维码</span>
+                        ) : null}
+                        {whatsappQrError ? <span className="qr-error-text">{whatsappQrError}</span> : null}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="settings-actions">
+              <button className="ghost-button" onClick={closeEditChannelModal}>
+                取消
+              </button>
+              <button
+                className="primary-button"
+                onClick={() => void saveEditingChannel()}
+                disabled={isBusy}
+              >
+                保存
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <div className="toast-layer" aria-live="polite" aria-atomic="true">
         {error ? (
@@ -724,41 +1478,56 @@ export function App() {
             className={view === "ai" ? "rail-button active" : "rail-button"}
             onClick={() => setView("ai")}
           >
-            AI
+            <span className="rail-button-icon" aria-hidden="true">
+              <AutoAwesomeIcon fontSize="inherit" />
+            </span>
+            <span className="rail-button-label">AI</span>
           </button>
           <button
             className={view === "chat" ? "rail-button active" : "rail-button"}
             onClick={() => setView("chat")}
           >
-            消息
+            <span className="rail-button-icon" aria-hidden="true">
+              <ForumIcon fontSize="inherit" />
+            </span>
+            <span className="rail-button-label">消息</span>
+          </button>
+          <button
+            className={view === "channels" ? "rail-button active" : "rail-button"}
+            onClick={() => setView("channels")}
+          >
+            <span className="rail-button-icon" aria-hidden="true">
+              <HubIcon fontSize="inherit" />
+            </span>
+            <span className="rail-button-label">渠道</span>
           </button>
         </div>
 
         <div className="rail-footer">
-          <button
-            className="rail-button rail-theme-button"
+          <div
+            className="theme-switch"
+            data-mode={themeMode}
             onClick={() => void handleThemeModeChange(themeMode === "dark" ? "light" : "dark")}
+            role="button"
+            tabIndex={0}
             aria-label={themeMode === "dark" ? "切换到明亮模式" : "切换到暗黑模式"}
+            aria-pressed={themeMode === "dark"}
             title={themeMode === "dark" ? "切换到明亮模式" : "切换到暗黑模式"}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void handleThemeModeChange(themeMode === "dark" ? "light" : "dark");
+              }
+            }}
           >
-            <span aria-hidden="true">
-              {themeMode === "dark" ? <LightModeIcon fontSize="inherit" /> : <DarkModeIcon fontSize="inherit" />}
+            <span className="theme-switch-thumb" aria-hidden="true" />
+            <span className="theme-switch-option theme-switch-option-light" aria-hidden="true">
+              <LightModeIcon fontSize="inherit" />
             </span>
-          </button>
-          <button
-            className={
-              view === "settings"
-                ? "rail-button rail-gear-button active"
-                : "rail-button rail-gear-button"
-            }
-            onClick={() => setView("settings")}
-            aria-label="设置"
-            title="设置"
-          >
-            <span aria-hidden="true">
-              <SettingsIcon fontSize="inherit" />
+            <span className="theme-switch-option theme-switch-option-dark" aria-hidden="true">
+              <DarkModeIcon fontSize="inherit" />
             </span>
-          </button>
+          </div>
         </div>
       </aside>
 
@@ -787,7 +1556,7 @@ export function App() {
               {filteredConversations.length === 0 ? (
                 <EmptyState
                   title={channelConversations.length === 0 ? "还没有渠道会话" : "没有匹配的会话"}
-                  description="配置 Telegram 后，消息会自动进入这里。"
+                  description="配置 TelegramBot 后，消息会自动进入这里。"
                 />
               ) : (
                 filteredConversations.map((conversation) => (
@@ -816,7 +1585,7 @@ export function App() {
                       </div>
                     </div>
                     <div className="session-meta-row session-meta-row-bottom">
-                      <span className="meta-tag">{describeChannel(conversation.channelType)}</span>
+                      <span className="meta-tag">{getConversationChannelName(conversation)}</span>
                       <span className="session-time">{formatConversationTime(conversation.updatedAt)}</span>
                     </div>
                   </button>
@@ -837,7 +1606,7 @@ export function App() {
                 <h2>{selectedConversation?.title ?? "选择一个会话"}</h2>
                 <p>
                   {selectedConversation
-                    ? `${describeChannel(selectedConversation.channelType)} / ${
+                    ? `${getConversationChannelName(selectedConversation)} / ${
                         selectedConversation.participantLabel ?? selectedConversation.externalUserId
                       }`
                     : "在左侧选择一个会话开始处理消息"}
@@ -876,6 +1645,12 @@ export function App() {
                     ) : (
                       "学习会话"
                     )}
+                  </button>
+                  <button
+                    className="ghost-button chat-detail-toggle"
+                    onClick={() => setIsChatDetailDrawerOpen(true)}
+                  >
+                    会话详情
                   </button>
                 </div>
               ) : null}
@@ -947,81 +1722,62 @@ export function App() {
                   disabled={!selectedConversation || isBusy}
                 />
                 <div className="composer-actions">
-                  <span>Telegram 会话会同时发回 Telegram，并写入本地记录。</span>
+                  <span>TelegramBot 会话会同时发回 TelegramBot，并写入本地记录。</span>
                   <button
-                    className="primary-button"
+                    className="primary-button icon-only-button assistant-send-button"
                     onClick={() => void handleSendMessage()}
                     disabled={!selectedConversation || !draft.trim() || isBusy}
+                    aria-label="发送"
+                    title="发送"
                   >
-                    发送
+                    <ArrowUpwardIcon fontSize="small" />
                   </button>
                 </div>
               </footer>
             </section>
           </section>
 
-          <aside className="detail-pane chat-detail-pane">
-            <section className="detail-card detail-hero-card">
-              <h3>会话信息</h3>
-              {selectedConversation ? (
-                <>
-                  <div className="detail-hero">
-                    <div className="detail-avatar" aria-hidden="true">
-                      {selectedConversation.title.slice(0, 1).toUpperCase()}
-                    </div>
-                    <div>
-                      <strong>{selectedConversation.title}</strong>
-                      <p>{selectedConversation.participantLabel ?? "未命名联系人"}</p>
-                    </div>
-                  </div>
-                  <div className="detail-list">
-                    <p><span>标题</span>{selectedConversation.title}</p>
-                    <p><span>渠道</span>{describeChannel(selectedConversation.channelType)}</p>
-                    <p><span>用户</span>{selectedConversation.externalUserId}</p>
-                  </div>
-                  <div className="detail-editor">
-                    <label className="settings-field">
-                      <span>联系方式 / 备注</span>
-                      <input
-                        value={participantLabelDraft}
-                        onChange={(event) => setParticipantLabelDraft(event.target.value)}
-                        placeholder="手动补充手机号、微信、备注名"
-                        disabled={isBusy}
-                      />
-                    </label>
-                    <button
-                      className="primary-button"
-                      onClick={() => void handleSaveParticipantLabel()}
-                      disabled={isBusy}
-                    >
-                      保存
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <EmptyState title="暂无会话" description="选中后可查看基本信息。" />
-              )}
-            </section>
-
-            <section className="detail-card">
-              <h3>用户画像与记忆</h3>
-              {memories.length ? (
-                <div className="memory-stack">
-                  {memories.map((memory) => (
-                    <div key={memory.id} className="memory-card">
-                      <div className="memory-card-top">
-                        <strong>{labelMemoryType(memory.memoryType)}</strong>
-                        <span>{Math.round(memory.confidence * 100)}%</span>
-                      </div>
-                      <p>{memory.summary ?? "无摘要"}</p>
-                      <small>{memory.content}</small>
-                    </div>
-                  ))}
+          {isChatDetailDrawerOpen ? (
+            <div
+              className="detail-drawer-backdrop"
+              role="presentation"
+              onMouseDown={() => setIsChatDetailDrawerOpen(false)}
+            >
+              <aside
+                className="detail-pane chat-detail-pane detail-drawer"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <div className="detail-drawer-header">
+                  <h3>会话详情</h3>
+                  <button className="ghost-button" onClick={() => setIsChatDetailDrawerOpen(false)}>
+                    关闭
+                  </button>
                 </div>
-              ) : (
-                <EmptyState title="暂无记忆" description="触发学习后，这里会显示用户画像和关键事实。" />
-              )}
-            </section>
+                <ChatDetailContent
+                  selectedConversation={selectedConversation}
+                  memories={memories}
+                  participantLabelDraft={participantLabelDraft}
+                  isBusy={isBusy}
+                  channelName={
+                    selectedConversation ? getConversationChannelName(selectedConversation) : null
+                  }
+                  onParticipantLabelChange={setParticipantLabelDraft}
+                  onSaveParticipantLabel={handleSaveParticipantLabel}
+                />
+              </aside>
+            </div>
+          ) : null}
+
+          <aside className="detail-pane chat-detail-pane">
+            <ChatDetailContent
+              selectedConversation={selectedConversation}
+              memories={memories}
+              participantLabelDraft={participantLabelDraft}
+              isBusy={isBusy}
+              channelName={selectedConversation ? getConversationChannelName(selectedConversation) : null}
+              onParticipantLabelChange={setParticipantLabelDraft}
+              onSaveParticipantLabel={handleSaveParticipantLabel}
+            />
           </aside>
         </>
       ) : view === "ai" ? (
@@ -1034,11 +1790,26 @@ export function App() {
               </div>
             </header>
             <div className="ai-tab-list">
-              <button className={aiTab === "assistant" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("assistant")}>AI助手</button>
-              <button className={aiTab === "base" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("base")}>基础记忆</button>
-              <button className={aiTab === "style" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("style")}>风格记忆</button>
-              <button className={aiTab === "knowledge" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("knowledge")}>知识记忆</button>
-              <button className={aiTab === "model" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("model")}>模型</button>
+              <button className={aiTab === "assistant" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("assistant")}>
+                <SmartToyIcon fontSize="small" />
+                <span>AI助手</span>
+              </button>
+              <button className={aiTab === "base" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("base")}>
+                <MemoryIcon fontSize="small" />
+                <span>基础记忆</span>
+              </button>
+              <button className={aiTab === "style" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("style")}>
+                <StyleIcon fontSize="small" />
+                <span>风格记忆</span>
+              </button>
+              <button className={aiTab === "knowledge" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("knowledge")}>
+                <MenuBookIcon fontSize="small" />
+                <span>知识记忆</span>
+              </button>
+              <button className={aiTab === "model" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("model")}>
+                <TuneIcon fontSize="small" />
+                <span>模型</span>
+              </button>
             </div>
           </aside>
 
@@ -1067,11 +1838,13 @@ export function App() {
                         <p>直接对话、调策略、改记忆。你也可以发图片让 AI 一起理解。</p>
                       </div>
                       <button
-                        className="ghost-button subtle-danger"
+                        className="ghost-button icon-only-button subtle-danger"
                         onClick={() => void handleClearAiChat()}
                         disabled={!activeConversation || messages.length === 0 || isBusy}
+                        aria-label="清空聊天"
+                        title="清空聊天"
                       >
-                        清空聊天
+                        <DeleteIcon fontSize="small" />
                       </button>
                     </div>
                     <div className="message-canvas assistant-message-canvas">
@@ -1172,13 +1945,15 @@ export function App() {
                       </span>
                     </div>
                     <button
-                      className="primary-button"
+                      className="primary-button icon-only-button assistant-send-button"
                       onClick={() => void handleSendMessage()}
                       disabled={
                         !activeConversation || (!draft.trim() && !aiImageDraft) || isBusy
                       }
+                      aria-label="发送"
+                      title="发送"
                     >
-                      发送
+                      <ArrowUpwardIcon fontSize="small" />
                     </button>
                   </div>
                 </footer>
@@ -1187,11 +1962,11 @@ export function App() {
               <>
               <MemoryEditor
                 title="基础记忆"
-                description="定义 AI 的身份、边界、原则和长期行为约束。"
+                description="定义使用者的身份、边界、原则和长期行为约束，供 AI 助手与自动回复共用。"
                 value={baseMemoryDraft}
                 onChange={setBaseMemoryDraft}
                 onSave={() =>
-                  void handleSaveAiMemory("base", baseMemoryDraft, "AI base memory")
+                  void handleSaveAiMemory("base", baseMemoryDraft, "Global base memory")
                 }
               />
               </>
@@ -1199,11 +1974,11 @@ export function App() {
               <>
               <MemoryEditor
                 title="风格记忆"
-                description="定义说话方式、长度偏好、情绪风格、常用表达。"
+                description="定义使用者的说话方式、长度偏好、情绪风格、常用表达，供 AI 助手与自动回复共用。"
                 value={styleMemoryDraft}
                 onChange={setStyleMemoryDraft}
                 onSave={() =>
-                  void handleSaveAiMemory("style", styleMemoryDraft, "AI style memory")
+                  void handleSaveAiMemory("style", styleMemoryDraft, "Global style memory")
                 }
               />
               </>
@@ -1211,11 +1986,11 @@ export function App() {
               <>
               <MemoryEditor
                 title="知识记忆"
-                description="沉淀产品信息、FAQ、规则、业务知识和常见判断依据。"
+                description="沉淀使用者可复用的产品信息、FAQ、规则、业务知识和常见判断依据。"
                 value={knowledgeMemoryDraft}
                 onChange={setKnowledgeMemoryDraft}
                 onSave={() =>
-                  void handleSaveAiMemory("knowledge", knowledgeMemoryDraft, "AI knowledge memory")
+                  void handleSaveAiMemory("knowledge", knowledgeMemoryDraft, "Global knowledge memory")
                 }
               />
               </>
@@ -1225,22 +2000,10 @@ export function App() {
                 <div className="pane-header">
                   <div>
                     <h1>模型</h1>
-                    <p>配置 OpenAI 兼容协议、模型和系统提示词。</p>
+                    <p>配置模型、Base URL、API Key，以及两套职责不同的系统提示词。</p>
                   </div>
                 </div>
                 <div className="settings-grid">
-                  <label className="settings-field">
-                    <span>协议提供方</span>
-                    <input
-                      value={settingsDraft.ai.provider}
-                      onChange={(event) =>
-                        setSettingsDraft((current) => ({
-                          ...current,
-                          ai: { ...current.ai, provider: event.target.value },
-                        }))
-                      }
-                    />
-                  </label>
                   <label className="settings-field">
                     <span>模型名</span>
                     <input
@@ -1295,7 +2058,7 @@ export function App() {
                     />
                   </label>
                   <label className="settings-field settings-field-wide">
-                    <span>系统提示词</span>
+                    <span>AI 助手系统提示词</span>
                     <textarea
                       rows={6}
                       value={settingsDraft.ai.systemPrompt}
@@ -1303,6 +2066,19 @@ export function App() {
                         setSettingsDraft((current) => ({
                           ...current,
                           ai: { ...current.ai, systemPrompt: event.target.value },
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="settings-field settings-field-wide">
+                    <span>自动回复系统提示词</span>
+                    <textarea
+                      rows={6}
+                      value={settingsDraft.ai.autoReplySystemPrompt}
+                      onChange={(event) =>
+                        setSettingsDraft((current) => ({
+                          ...current,
+                          ai: { ...current.ai, autoReplySystemPrompt: event.target.value },
                         }))
                       }
                     />
@@ -1319,49 +2095,57 @@ export function App() {
           </section>
         </section>
       ) : (
-        <section className="settings-layout">
-          <article className="settings-panel">
+        <section className="settings-layout channels-layout">
+          <article className="settings-panel channels-panel">
             <div className="pane-header">
               <div>
-                <h1>设置</h1>
-                <p>这里保留客户端级配置</p>
+                <h1>渠道</h1>
+                <p>管理外部消息接入</p>
               </div>
-            </div>
-            <div className="settings-grid">
-              <label className="settings-field">
-                <span>界面主题</span>
-                <select
-                  value={settingsDraft.ui.themeMode}
-                  onChange={(event) =>
-                    setSettingsDraft((current) => ({
-                      ...current,
-                      ui: { themeMode: event.target.value as ThemeMode },
-                    }))
-                  }
-                >
-                  <option value="dark">暗黑模式</option>
-                  <option value="light">明亮模式</option>
-                </select>
-              </label>
-              <label className="settings-field settings-field-wide">
-                <span>Telegram Bot Token</span>
-                <input
-                  type="password"
-                  value={settingsDraft.telegram.botToken}
-                  onChange={(event) =>
-                    setSettingsDraft((current) => ({
-                      ...current,
-                      telegram: { ...current.telegram, botToken: event.target.value },
-                    }))
-                  }
-                />
-              </label>
-            </div>
-            <div className="settings-actions">
-              <button className="primary-button" onClick={() => void handleSaveTelegramSettings()}>
-                保存客户端设置
+              <button className="ghost-button icon-text-button" onClick={openAddChannelModal}>
+                <AddIcon fontSize="small" />
+                添加渠道
               </button>
             </div>
+
+            {settingsDraft.channels.length === 0 ? (
+              <EmptyState title="暂无渠道" description="添加 TelegramBot 后，消息会在左侧消息列表中出现。" />
+            ) : (
+              <div className="channel-stack">
+                {settingsDraft.channels.map((channel) => {
+                  const channelStatus = channelStatusById[channel.id] ?? null;
+                  const rowStatus = getChannelRowStatus(channel, channelStatus);
+                  return (
+                    <div className="channel-row" key={channel.id}>
+                      <div className="channel-row-name">
+                        <strong>{channel.name.trim() || "TelegramBot"}</strong>
+                      </div>
+                      <div className="channel-row-type">{describeChannel(channel.type)}</div>
+                      <div className="channel-row-status" data-status={rowStatus.tone}>
+                        <span>{rowStatus.label}</span>
+                        {rowStatus.description ? <small>{rowStatus.description}</small> : null}
+                      </div>
+                      <button
+                        className="ghost-button icon-text-button"
+                        onClick={() => openEditChannelModal(channel)}
+                      >
+                        <EditIcon fontSize="small" />
+                        编辑
+                      </button>
+                      <button
+                        className="ghost-button icon-only-button subtle-danger"
+                        onClick={() => void removeChannel(channel.id)}
+                        aria-label="删除渠道"
+                        title="删除渠道"
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
           </article>
         </section>
       )}
@@ -1407,6 +2191,90 @@ function MemoryEditor({
         </button>
       </div>
     </article>
+  );
+}
+
+function ChatDetailContent({
+  selectedConversation,
+  memories,
+  participantLabelDraft,
+  isBusy,
+  channelName,
+  onParticipantLabelChange,
+  onSaveParticipantLabel,
+}: {
+  selectedConversation: ConversationSummary | null;
+  memories: MemoryEntry[];
+  participantLabelDraft: string;
+  isBusy: boolean;
+  channelName: string | null;
+  onParticipantLabelChange: (value: string) => void;
+  onSaveParticipantLabel: () => Promise<void>;
+}) {
+  return (
+    <>
+      <section className="detail-card detail-hero-card">
+        <h3>会话信息</h3>
+        {selectedConversation ? (
+          <>
+            <div className="detail-hero">
+              <div className="detail-avatar" aria-hidden="true">
+                {selectedConversation.title.slice(0, 1).toUpperCase()}
+              </div>
+              <div>
+                <strong>{selectedConversation.title}</strong>
+                <p>{selectedConversation.participantLabel ?? "未命名联系人"}</p>
+              </div>
+            </div>
+            <div className="detail-list">
+              <p><span>标题</span>{selectedConversation.title}</p>
+              <p><span>渠道</span>{channelName ?? describeChannel(selectedConversation.channelType)}</p>
+              <p><span>用户</span>{selectedConversation.externalUserId}</p>
+            </div>
+            <div className="detail-editor">
+              <label className="settings-field">
+                <span>联系方式 / 备注</span>
+                <input
+                  value={participantLabelDraft}
+                  onChange={(event) => onParticipantLabelChange(event.target.value)}
+                  placeholder="手动补充手机号、微信、备注名"
+                  disabled={isBusy}
+                />
+              </label>
+              <button
+                className="primary-button"
+                onClick={() => void onSaveParticipantLabel()}
+                disabled={isBusy}
+              >
+                保存
+              </button>
+            </div>
+          </>
+        ) : (
+          <EmptyState title="暂无会话" description="选中后可查看基本信息。" />
+        )}
+      </section>
+
+      <section className="detail-card">
+        <h3>用户画像与记忆</h3>
+        {memories.length ? (
+          <div className="memory-stack">
+            {memories.map((memory) => (
+              <div key={memory.id} className="memory-card">
+                <div className="memory-card-top">
+                  <strong>{labelMemoryType(memory.memoryType)}</strong>
+                  <span>{Math.round(memory.confidence * 100)}%</span>
+                </div>
+                <p>{memory.summary ?? "无摘要"}</p>
+                <small>{memory.content}</small>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="暂无记忆" description="触发学习后，这里会显示用户画像和关键事实。" />
+        )}
+      </section>
+    </>
   );
 }
 
@@ -1537,7 +2405,9 @@ function labelWorkbenchSender(senderType: string) {
 }
 
 function describeSource(sourceType: string) {
-  if (sourceType === "telegram") return "Telegram";
+  if (sourceType === "telegram") return "TelegramBot";
+  if (sourceType === "telegram_user") return "Telegram 私人账号";
+  if (sourceType === "whatsapp_personal") return "WhatsApp 私人账号";
   if (sourceType === "moonchat_ai") return "MoonChat AI";
   if (sourceType === "moonchat_human") return "人工工作台";
   if (sourceType === "local_ai") return "AI 助手";
@@ -1546,7 +2416,9 @@ function describeSource(sourceType: string) {
 
 function describeChannel(channelType: string) {
   if (channelType === "local_ai") return "本地 AI";
-  if (channelType === "telegram") return "Telegram";
+  if (channelType === "telegram") return "TelegramBot";
+  if (channelType === "telegram_user") return "Telegram 私人账号";
+  if (channelType === "whatsapp_personal") return "WhatsApp 私人账号";
   return channelType;
 }
 
@@ -1601,6 +2473,87 @@ function groupMessagesByDay(messages: ConversationMessage[]) {
 
 function findMemoryContent(memories: MemoryEntry[], memoryType: string) {
   return memories.find((memory) => memory.memoryType === memoryType)?.content ?? "";
+}
+
+function normalizeChannels(channels: ChannelConfig[]) {
+  return channels.map((channel, index) => ({
+    ...channel,
+    name:
+      channel.name.trim() ||
+      (channel.type === "telegram_user"
+        ? `Telegram 私人账号 ${index + 1}`
+        : channel.type === "whatsapp_personal"
+          ? `WhatsApp 私人账号 ${index + 1}`
+        : `TelegramBot ${index + 1}`),
+    botToken: channel.botToken?.trim() ?? "",
+    apiHash: channel.apiHash?.trim() ?? "",
+    phoneNumber: channel.phoneNumber?.trim() ?? "",
+    loginCode: channel.loginCode?.trim() ?? "",
+    twoFactorPassword: channel.twoFactorPassword?.trim() ?? "",
+    sessionString: channel.sessionString?.trim() ?? "",
+    authStatePath: channel.authStatePath?.trim() ?? "",
+    lastQrDataUrl: channel.lastQrDataUrl ?? "",
+  }));
+}
+
+function createTelegramChannel(index: number): ChannelConfig {
+  return {
+    id: crypto.randomUUID(),
+    type: "telegram",
+    name: `TelegramBot ${index}`,
+    botToken: "",
+    enabled: true,
+  };
+}
+
+function createTelegramUserChannel(index: number): ChannelConfig {
+  return {
+    id: crypto.randomUUID(),
+    type: "telegram_user",
+    name: `Telegram 私人账号 ${index}`,
+    apiId: undefined,
+    apiHash: "",
+    phoneNumber: "",
+    loginCode: "",
+    twoFactorPassword: "",
+    sessionString: "",
+    enabled: true,
+  };
+}
+
+function createWhatsappPersonalChannel(index: number): ChannelConfig {
+  return {
+    id: crypto.randomUUID(),
+    type: "whatsapp_personal",
+    name: `WhatsApp 私人账号 ${index}`,
+    authStatePath: "",
+    lastQrDataUrl: "",
+    enabled: true,
+  };
+}
+
+function getChannelRowStatus(
+  channel: ChannelConfig,
+  channelStatus: ChannelConnectionStatus | null,
+) {
+  if (!channel.enabled) {
+    return { label: "已停用", description: "", tone: "muted" };
+  }
+  if (!channelStatus) {
+    return { label: "检测中", description: "正在检查连接", tone: "checking" };
+  }
+  if (channelStatus.connected) {
+    return {
+      label: "已连接",
+      description: channel.type === "whatsapp_personal" ? "会话有效" : "服务正常",
+      tone: "ok",
+    };
+  }
+  return {
+    label: channelStatus.needsLogin ? "需重新登录" : "连接异常",
+    description: channelStatus.message || `${describeChannel(channel.type)} 未连接`,
+    tone: "warning",
+  };
 }
 
 function readFileAsDataUrl(file: File) {

@@ -3,15 +3,34 @@ import path from "node:path";
 import { z } from "zod";
 import type { AppSettings } from "../../../src/shared/contracts.js";
 
+const channelSchema = z.object({
+  id: z.string().default(() => crypto.randomUUID()),
+  type: z.enum(["telegram", "telegram_user", "whatsapp_personal"]).default("telegram"),
+  name: z.string().default("TelegramBot"),
+  botToken: z.string().optional().default(""),
+  apiId: z.coerce.number().optional(),
+  apiHash: z.string().optional().default(""),
+  phoneNumber: z.string().optional().default(""),
+  loginCode: z.string().optional().default(""),
+  twoFactorPassword: z.string().optional().default(""),
+  sessionString: z.string().optional().default(""),
+  authStatePath: z.string().optional().default(""),
+  lastQrDataUrl: z.string().optional().default(""),
+  enabled: z.boolean().default(true),
+});
+
 const settingsSchema = z.object({
   ui: z
     .object({
       themeMode: z.enum(["light", "dark"]).default("dark"),
     })
     .default({ themeMode: "dark" }),
-  telegram: z.object({
-    botToken: z.string().default(""),
-  }),
+  telegram: z
+    .object({
+      botToken: z.string().default(""),
+    })
+    .default({ botToken: "" }),
+  channels: z.array(channelSchema).default([]),
   ai: z.object({
     provider: z.string().default("openai"),
     apiKey: z.string().default(""),
@@ -23,7 +42,30 @@ const settingsSchema = z.object({
       .default(
         "你是 MoonChat 的 AI 助手，负责在聊天聚合工作台里协助进行自然、稳妥、贴近上下文的回复。",
       ),
+    autoReplySystemPrompt: z
+      .string()
+      .default(
+        "你正在代表使用者本人回复外部聊天消息。你的目标是模拟使用者的口吻、偏好、知识边界和沟通风格，基于记忆与最近上下文给出自然回复。不要暴露你是 AI，不要提 MoonChat，不要虚构事实；不确定时用简短、保守、可继续追问的方式回复。",
+      ),
   }),
+}).transform((settings) => {
+  if (settings.channels.length > 0 || !settings.telegram.botToken.trim()) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    channels: [
+      {
+        id: "telegram-default",
+        type: "telegram" as const,
+        name: "TelegramBot",
+        botToken: settings.telegram.botToken,
+        enabled: true,
+      },
+    ],
+    telegram: { botToken: "" },
+  };
 });
 
 export class AppSettingsService {
@@ -44,6 +86,7 @@ export class AppSettingsService {
       telegram: {
         botToken: "",
       },
+      channels: [],
       ai: {
         provider: "openai",
         apiKey: "",
@@ -52,12 +95,17 @@ export class AppSettingsService {
         temperature: 0.4,
         systemPrompt:
           "你是 MoonChat 的 AI 助手，负责在聊天聚合工作台里协助进行自然、稳妥、贴近上下文的回复。",
+        autoReplySystemPrompt:
+          "你正在代表使用者本人回复外部聊天消息。你的目标是模拟使用者的口吻、偏好、知识边界和沟通风格，基于记忆与最近上下文给出自然回复。不要暴露你是 AI，不要提 MoonChat，不要虚构事实；不确定时用简短、保守、可继续追问的方式回复。",
       },
     });
 
     try {
       const raw = await fs.readFile(settingsPath, "utf8");
       const persisted = settingsSchema.parse(JSON.parse(raw));
+      if (JSON.stringify(persisted, null, 2) !== raw.trim()) {
+        await fs.writeFile(settingsPath, JSON.stringify(persisted, null, 2), "utf8");
+      }
       return new AppSettingsService(settingsPath, persisted);
     } catch {
       await fs.mkdir(dataDir, { recursive: true });
