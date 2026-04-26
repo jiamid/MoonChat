@@ -20,6 +20,8 @@ import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import PsychologyIcon from "@mui/icons-material/Psychology";
 import logoSrc from "../logo.png";
 import type {
   AppDashboardSnapshot,
@@ -1538,8 +1540,13 @@ export function App() {
               <div>
                 <h1>消息</h1>
               </div>
-              <button className="ghost-button" onClick={() => void refreshWorkspace()}>
-                刷新
+              <button
+                className="ghost-button icon-only-button"
+                onClick={() => void refreshWorkspace()}
+                aria-label="刷新消息"
+                title="刷新"
+              >
+                <RefreshIcon fontSize="small" />
               </button>
             </header>
 
@@ -1616,7 +1623,11 @@ export function App() {
               {selectedConversation ? (
                 <div className="topbar-actions">
                   <button
-                    className={selectedConversation.autoReplyEnabled ? "toggle active" : "toggle"}
+                    className={
+                      selectedConversation.autoReplyEnabled
+                        ? "toggle active icon-text-button"
+                        : "toggle icon-text-button"
+                    }
                     onClick={async () => {
                       await window.moonchat.toggleAutoReply(
                         selectedConversation.id,
@@ -1625,10 +1636,11 @@ export function App() {
                       await refreshWorkspace();
                     }}
                   >
+                    <SmartToyIcon fontSize="small" />
                     {selectedConversation.autoReplyEnabled ? "关闭自动回复" : "开启自动回复"}
                   </button>
                   <button
-                    className="ghost-button"
+                    className="ghost-button icon-text-button"
                     onClick={() => void handleTriggerLearning()}
                     disabled={
                       selectedConversation.learningStatus === "learned" ||
@@ -1643,7 +1655,10 @@ export function App() {
                         学习中
                       </span>
                     ) : (
-                      "学习会话"
+                      <>
+                        <PsychologyIcon fontSize="small" />
+                        学习会话
+                      </>
                     )}
                   </button>
                   <button
@@ -1996,7 +2011,7 @@ export function App() {
               </>
             ) : (
               <>
-                <article className="settings-panel">
+                <article className="settings-panel model-settings-panel">
                 <div className="pane-header">
                   <div>
                     <h1>模型</h1>
