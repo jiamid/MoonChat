@@ -124,6 +124,36 @@ export const aiReplyLogs = sqliteTable("ai_reply_logs", {
   createdAt: timestamp("created_at"),
 });
 
+export const knowledgeDocuments = sqliteTable("knowledge_documents", {
+  id: id(),
+  title: text("title").notNull(),
+  sourceType: text("source_type").notNull().default("manual_file"),
+  sourcePath: text("source_path"),
+  contentHash: text("content_hash").notNull(),
+  chunkCount: integer("chunk_count").notNull().default(0),
+  embeddingModel: text("embedding_model"),
+  status: text("status").notNull().default("pending"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at"),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const knowledgeChunks = sqliteTable("knowledge_chunks", {
+  id: id(),
+  documentId: text("document_id")
+    .notNull()
+    .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+  chunkIndex: integer("chunk_index").notNull(),
+  content: text("content").notNull(),
+  contentHash: text("content_hash").notNull(),
+  tokenEstimate: integer("token_estimate").notNull().default(0),
+  embeddingJson: text("embedding_json"),
+  embeddingModel: text("embedding_model"),
+  indexedAt: text("indexed_at"),
+  createdAt: timestamp("created_at"),
+  updatedAt: timestamp("updated_at"),
+});
+
 export const conversationRelations = relations(conversations, ({ many, one }) => ({
   messages: many(messages),
   aiSettings: one(conversationAiSettings, {
@@ -241,6 +271,34 @@ export const bootstrapSql = `
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'manual_file',
+    source_path TEXT,
+    content_hash TEXT NOT NULL,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    embedding_model TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    token_estimate INTEGER NOT NULL DEFAULT 0,
+    embedding_json TEXT,
+    embedding_model TEXT,
+    indexed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at
     ON messages (conversation_id, created_at DESC);
 
@@ -249,4 +307,10 @@ export const bootstrapSql = `
 
   CREATE INDEX IF NOT EXISTS idx_learning_jobs_status_updated_at
     ON learning_jobs (status, updated_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_knowledge_documents_updated_at
+    ON knowledge_documents (updated_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document_index
+    ON knowledge_chunks (document_id, chunk_index);
 `;

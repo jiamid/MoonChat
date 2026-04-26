@@ -6,14 +6,14 @@ body,
 .feishu-shell {
   --app-text: #ecebff;
   --app-bg:
-    radial-gradient(circle at 16% 10%, rgba(151, 111, 255, 0.24), transparent 28%),
-    radial-gradient(circle at 82% 18%, rgba(80, 94, 255, 0.18), transparent 26%),
-    radial-gradient(circle at 72% 86%, rgba(34, 26, 102, 0.34), transparent 34%),
-    linear-gradient(180deg, #100b28 0%, #080815 100%);
+    radial-gradient(circle at 12% 12%, rgba(111, 75, 206, 0.3), transparent 30%),
+    radial-gradient(circle at 78% 34%, rgba(32, 49, 133, 0.34), transparent 34%),
+    radial-gradient(circle at 58% 84%, rgba(22, 18, 78, 0.42), transparent 36%),
+    linear-gradient(180deg, #0b0922 0%, #050613 100%);
   --shell-bg:
-    radial-gradient(circle at top left, rgba(122, 92, 255, 0.12), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-    #111126;
+    radial-gradient(circle at 12% 12%, rgba(111, 75, 206, 0.26), transparent 30%),
+    radial-gradient(circle at 78% 34%, rgba(32, 49, 133, 0.3), transparent 34%),
+    linear-gradient(180deg, rgba(11, 9, 34, 0.98), rgba(5, 6, 19, 0.98));
   --panel-strong: #121229;
   --panel-main: #161733;
   --panel-soft: rgba(18, 18, 41, 0.82);
@@ -1371,6 +1371,198 @@ select {
   background: transparent;
   border: 0;
   border-radius: 0;
+}
+
+.knowledge-panel {
+  display: grid;
+  gap: 16px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rag-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.rag-status-card strong {
+  color: var(--text-primary);
+}
+
+.rag-status-card.ok {
+  border-color: rgba(112, 208, 138, 0.34);
+}
+
+.rag-status-card.warning {
+  border-color: rgba(255, 184, 107, 0.34);
+}
+
+.rag-progress-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-color);
+}
+
+.rag-progress-card.ok {
+  border-color: rgba(112, 208, 138, 0.34);
+}
+
+.rag-progress-card.error {
+  border-color: rgba(255, 122, 122, 0.42);
+}
+
+.rag-progress-card.active {
+  border-color: rgba(132, 153, 255, 0.34);
+}
+
+.rag-progress-top,
+.rag-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rag-progress-top strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rag-progress-top span {
+  flex: none;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.rag-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(132, 153, 255, 0.14);
+}
+
+.rag-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-solid);
+  transition: width 180ms ease;
+}
+
+.rag-progress-meta {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.rag-progress-error {
+  margin: 0;
+  color: #ff7a7a;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.rag-search-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.rag-search-panel .list-toolbar {
+  margin: 0;
+}
+
+.rag-result-stack,
+.knowledge-document-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.rag-result-card,
+.knowledge-document-row {
+  border-radius: 14px;
+  background: var(--surface-chat-card);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+.rag-result-card {
+  padding: 14px;
+}
+
+.rag-result-card p {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.knowledge-document-row {
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 96px 96px 40px 40px;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.knowledge-document-row div {
+  min-width: 0;
+}
+
+.knowledge-document-row strong,
+.knowledge-document-row p,
+.knowledge-document-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-document-row p,
+.knowledge-document-row small {
+  display: block;
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.knowledge-status {
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.knowledge-status.indexed {
+  color: #70d08a;
+}
+
+.knowledge-status.partial {
+  color: #ffb86b;
+}
+
+.knowledge-status.failed {
+  color: #ff7a7a;
 }
 
 .memory-editor-panel {

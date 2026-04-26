@@ -47,6 +47,26 @@ interface Window {
       content: string;
       summary: string;
     }) => Promise<{ ok: boolean }>;
+    listKnowledgeDocuments: () => Promise<import("./shared/contracts").KnowledgeDocumentSummary[]>;
+    getKnowledgeEmbeddingStatus: () => Promise<{
+      ok: boolean;
+      provider: "builtin";
+      model: string;
+      message: string;
+    }>;
+    getKnowledgeProgress: () => Promise<import("./shared/contracts").RagProgressEvent>;
+    importKnowledgeFiles: () => Promise<import("./shared/contracts").KnowledgeDocumentSummary[]>;
+    deleteKnowledgeDocument: (documentId: string) => Promise<{ ok: boolean }>;
+    rebuildKnowledgeDocument: (
+      documentId: string,
+    ) => Promise<import("./shared/contracts").KnowledgeDocumentSummary>;
+    searchKnowledge: (
+      query: string,
+      limit?: number,
+    ) => Promise<import("./shared/contracts").KnowledgeSearchResult[]>;
+    onKnowledgeProgress: (
+      listener: (payload: import("./shared/contracts").RagProgressEvent) => void,
+    ) => () => void;
     listConversations: () => Promise<import("./shared/contracts").ConversationSummary[]>;
     getConversationMessages: (
       conversationId: string,

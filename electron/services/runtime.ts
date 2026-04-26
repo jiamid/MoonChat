@@ -11,6 +11,7 @@ import { TelegramUserService } from "./telegram/telegramUserService.js";
 import { WhatsappPersonalService } from "./whatsapp/whatsappPersonalService.js";
 import { LangChainAiService } from "./ai/langChainAiService.js";
 import { AppSettingsService } from "./settings/appSettingsService.js";
+import { RagService } from "./rag/ragService.js";
 import type { AppSettings } from "../../src/shared/contracts.js";
 
 export class AppRuntime {
@@ -21,6 +22,7 @@ export class AppRuntime {
     public readonly dashboard: DashboardService,
     public readonly learning: LearningService,
     public readonly memory: MemoryService,
+    public readonly rag: RagService,
     public readonly ai: AiOrchestratorService,
     public readonly telegram: TelegramBotService,
     public readonly telegramUser: TelegramUserService,
@@ -34,9 +36,10 @@ export class AppRuntime {
     const db = new DatabaseService(path.join(dataDir, "moonchat.db"));
     const settings = await AppSettingsService.bootstrap(dataDir);
     const memory = new MemoryService(db);
+    const rag = new RagService(db, dataDir);
     const conversations = new ConversationService(db);
     const langChainAi = new LangChainAiService(settings.getSettings().ai);
-    const ai = new AiOrchestratorService(db, memory, conversations, langChainAi);
+    const ai = new AiOrchestratorService(db, memory, rag, conversations, langChainAi);
     const learning = new LearningService(db, memory, conversations, langChainAi);
     const dashboard = new DashboardService(db);
     const telegram = new TelegramBotService(conversations, ai);
@@ -113,7 +116,7 @@ export class AppRuntime {
     const bootChannels = await whatsapp.reconfigure(telegramUserChannels);
     await telegram.reconfigure(bootChannels);
 
-    return new AppRuntime(db, settings, conversations, dashboard, learning, memory, ai, telegram, telegramUser, whatsapp);
+    return new AppRuntime(db, settings, conversations, dashboard, learning, memory, rag, ai, telegram, telegramUser, whatsapp);
   }
 
   getSettings() {

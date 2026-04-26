@@ -184,6 +184,7 @@ export class LangChainAiService {
     baseMemory: string;
     styleMemory: string;
     knowledgeMemory: string;
+    ragContext: string;
     conversationCatalog: Array<{
       id: string;
       title: string;
@@ -252,6 +253,8 @@ export class LangChainAiService {
       input.styleMemory || "暂无风格记忆",
       "当前知识记忆:",
       input.knowledgeMemory || "暂无知识记忆",
+      "检索到的知识库资料:",
+      input.ragContext || "暂无命中的知识库资料",
       "最近对话:",
       serializeMessages(input.recentMessages),
       "用户刚才说:",
@@ -424,6 +427,7 @@ export class LangChainAiService {
           "你工作在 AI 助手窗口里，这里是 MoonChat 的管理台，不是某个真实用户的聊天窗口。",
           "你的职责是帮助查看和管理所有渠道、所有聊天会话、所有会话用户，并在用户明确提出修改 AI 基础记忆、风格记忆、知识记忆时，输出对应的更新建议。",
           "如果用户询问工作台里的渠道、会话、用户、画像、记忆等信息，必须优先调用工具获取，禁止凭空猜测。",
+          "如果检索到知识库资料，回答时优先参考这些资料；资料不足或不相关时要明确说明，不要编造。",
           "如果用户明确要求给某个用户或某个会话发送消息，必须调用发送工具执行；不要假装已经发出。",
           "如果发送工具返回目标不唯一或没找到，应如实说明并引导用户进一步指定。",
           "输出必须是严格 JSON，不要使用 Markdown 代码块。",

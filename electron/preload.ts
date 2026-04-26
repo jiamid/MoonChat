@@ -5,7 +5,10 @@ import type {
   ChannelConfig,
   ConversationMessage,
   ConversationSummary,
+  KnowledgeDocumentSummary,
+  KnowledgeSearchResult,
   MemoryEntry,
+  RagProgressEvent,
 } from "../src/shared/contracts.js";
 
 const api = {
@@ -58,6 +61,32 @@ const api = {
     content: string;
     summary: string;
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke("memory:update-global-ai", payload),
+  listKnowledgeDocuments: (): Promise<KnowledgeDocumentSummary[]> =>
+    ipcRenderer.invoke("rag:list-documents"),
+  getKnowledgeEmbeddingStatus: (): Promise<{
+    ok: boolean;
+    provider: "builtin";
+    model: string;
+    message: string;
+  }> => ipcRenderer.invoke("rag:get-embedding-status"),
+  getKnowledgeProgress: (): Promise<RagProgressEvent> => ipcRenderer.invoke("rag:get-progress"),
+  importKnowledgeFiles: (): Promise<KnowledgeDocumentSummary[]> =>
+    ipcRenderer.invoke("rag:import-files"),
+  deleteKnowledgeDocument: (documentId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("rag:delete-document", documentId),
+  rebuildKnowledgeDocument: (documentId: string): Promise<KnowledgeDocumentSummary> =>
+    ipcRenderer.invoke("rag:rebuild-document", documentId),
+  searchKnowledge: (query: string, limit?: number): Promise<KnowledgeSearchResult[]> =>
+    ipcRenderer.invoke("rag:search", { query, limit }),
+  onKnowledgeProgress: (listener: (payload: RagProgressEvent) => void): (() => void) => {
+    const wrappedListener = (_event: unknown, payload: RagProgressEvent) => {
+      listener(payload);
+    };
+    ipcRenderer.on("rag:progress", wrappedListener);
+    return () => {
+      ipcRenderer.removeListener("rag:progress", wrappedListener);
+    };
+  },
   listConversations: (): Promise<ConversationSummary[]> =>
     ipcRenderer.invoke("conversation:list"),
   getConversationMessages: (conversationId: string): Promise<ConversationMessage[]> =>

@@ -25,6 +25,9 @@ export class DatabaseService {
     this.ensureColumn("conversations", "channel_id", "TEXT");
     this.ensureColumn("messages", "attachment_image_data_url", "TEXT");
     this.ensureColumn("messages", "attachment_mime_type", "TEXT");
+    this.ensureColumn("knowledge_documents", "embedding_model", "TEXT");
+    this.ensureColumn("knowledge_documents", "last_error", "TEXT");
+    this.ensureColumn("knowledge_chunks", "embedding_model", "TEXT");
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string) {

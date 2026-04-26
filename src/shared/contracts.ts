@@ -43,6 +43,7 @@ export interface AppDashboardSnapshot {
     conversations: number;
     messages: number;
     memories: number;
+    knowledgeDocuments: number;
   };
   latestJobs: LearningJobSummary[];
 }
@@ -90,5 +91,52 @@ export interface MemoryEntry {
   content: string;
   summary: string | null;
   confidence: number;
+  updatedAt: string;
+}
+
+export interface KnowledgeDocumentSummary {
+  id: string;
+  title: string;
+  sourceType: string;
+  sourcePath: string | null;
+  chunkCount: number;
+  embeddingModel: string | null;
+  status: "pending" | "indexed" | "partial" | "failed";
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeSearchResult {
+  chunkId: string;
+  documentId: string;
+  documentTitle: string;
+  sourcePath: string | null;
+  chunkIndex: number;
+  content: string;
+  score: number;
+  matchType: "vector" | "keyword";
+}
+
+export interface RagProgressEvent {
+  phase:
+    | "idle"
+    | "model_loading"
+    | "model_downloading"
+    | "document_indexing"
+    | "chunk_indexing"
+    | "completed"
+    | "error";
+  message: string;
+  model: string;
+  percent: number | null;
+  file: string | null;
+  loaded: number | null;
+  total: number | null;
+  documentId: string | null;
+  documentTitle: string | null;
+  chunkIndex: number | null;
+  totalChunks: number | null;
+  error: string | null;
   updatedAt: string;
 }

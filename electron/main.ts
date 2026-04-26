@@ -25,7 +25,7 @@ async function createWindow() {
     height: 960,
     minWidth: 1100,
     minHeight: 760,
-    backgroundColor: "#101828",
+    backgroundColor: "#050613",
     show: false,
     ...(isMac
       ? {
@@ -76,6 +76,9 @@ app.whenReady().then(async () => {
   registerAppIpc(runtime);
   runtime.conversations.onChanged((payload) => {
     mainWindow?.webContents.send("conversation:changed", payload);
+  });
+  runtime.rag.onProgress((payload) => {
+    mainWindow?.webContents.send("rag:progress", payload);
   });
   await createWindow();
 

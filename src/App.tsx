@@ -15,6 +15,7 @@ import SmartToyIcon from "@mui/icons-material/SmartToy";
 import MemoryIcon from "@mui/icons-material/Memory";
 import StyleIcon from "@mui/icons-material/Style";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
+import LibraryBooksIcon from "@mui/icons-material/LibraryBooks";
 import TuneIcon from "@mui/icons-material/Tune";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import AddIcon from "@mui/icons-material/Add";
@@ -29,7 +30,10 @@ import type {
   ChannelConfig,
   ConversationMessage,
   ConversationSummary,
+  KnowledgeDocumentSummary,
+  KnowledgeSearchResult,
   MemoryEntry,
+  RagProgressEvent,
 } from "./shared/contracts";
 
 type MessageRoleFilter = "all" | "inbound" | "outbound";
@@ -41,7 +45,7 @@ type MessageSourceFilter =
   | "moonchat_ai"
   | "moonchat_human";
 type AppView = "chat" | "channels" | "ai";
-type AiTab = "assistant" | "base" | "style" | "knowledge" | "model";
+type AiTab = "assistant" | "base" | "style" | "knowledge" | "rag" | "model";
 type ThemeMode = "light" | "dark";
 type ChannelConnectionStatus = {
   ok: boolean;
@@ -80,6 +84,16 @@ export function App() {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [globalAiMemories, setGlobalAiMemories] = useState<MemoryEntry[]>([]);
+  const [knowledgeDocuments, setKnowledgeDocuments] = useState<KnowledgeDocumentSummary[]>([]);
+  const [knowledgeSearchDraft, setKnowledgeSearchDraft] = useState("");
+  const [knowledgeSearchResults, setKnowledgeSearchResults] = useState<KnowledgeSearchResult[]>([]);
+  const [knowledgeEmbeddingStatus, setKnowledgeEmbeddingStatus] = useState<{
+    ok: boolean;
+    provider: "builtin";
+    model: string;
+    message: string;
+  } | null>(null);
+  const [knowledgeProgress, setKnowledgeProgress] = useState<RagProgressEvent | null>(null);
   const [baseMemoryDraft, setBaseMemoryDraft] = useState("");
   const [styleMemoryDraft, setStyleMemoryDraft] = useState("");
   const [knowledgeMemoryDraft, setKnowledgeMemoryDraft] = useState("");
@@ -228,6 +242,17 @@ export function App() {
     setKnowledgeMemoryDraft(findMemoryContent(items, "knowledge"));
   }
 
+  async function refreshKnowledgeBase() {
+    const [documents, embeddingStatus, progress] = await Promise.all([
+      window.moonchat.listKnowledgeDocuments(),
+      window.moonchat.getKnowledgeEmbeddingStatus(),
+      window.moonchat.getKnowledgeProgress(),
+    ]);
+    setKnowledgeDocuments(documents);
+    setKnowledgeEmbeddingStatus(embeddingStatus);
+    setKnowledgeProgress(progress);
+  }
+
   async function refreshMessages(conversationId: string) {
     setMessages(await window.moonchat.getConversationMessages(conversationId));
   }
@@ -242,7 +267,12 @@ export function App() {
   }
 
   async function refreshAll() {
-    await Promise.all([refreshWorkspace(), refreshSettings(), refreshGlobalAiMemories()]);
+    await Promise.all([
+      refreshWorkspace(),
+      refreshSettings(),
+      refreshGlobalAiMemories(),
+      refreshKnowledgeBase(),
+    ]);
   }
 
   async function refreshChannelStatuses(options: { notifyOnDisconnect?: boolean } = {}) {
@@ -301,6 +331,13 @@ export function App() {
 
   useEffect(() => {
     void refreshAll();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.moonchat.onKnowledgeProgress((payload) => {
+      setKnowledgeProgress(payload);
+    });
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -694,6 +731,79 @@ export function App() {
       setStatusMessage("AI 记忆已保存。");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存 AI 记忆失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleImportKnowledgeFiles() {
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const imported = await window.moonchat.importKnowledgeFiles();
+      await refreshKnowledgeBase();
+      await refreshWorkspace();
+      if (imported.length) {
+        const failedCount = imported.filter((item) => item.status === "failed").length;
+        setStatusMessage(
+          failedCount
+            ? `已导入 ${imported.length} 个文档，其中 ${failedCount} 个未完成 embedding。`
+            : `已导入 ${imported.length} 个知识文档。`,
+        );
+      }
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : "导入知识库失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleDeleteKnowledgeDocument(documentId: string) {
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await window.moonchat.deleteKnowledgeDocument(documentId);
+      await refreshKnowledgeBase();
+      await refreshWorkspace();
+      setStatusMessage("知识文档已删除。");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "删除知识文档失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleRebuildKnowledgeDocument(documentId: string) {
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await window.moonchat.rebuildKnowledgeDocument(documentId);
+      await refreshKnowledgeBase();
+      setStatusMessage("知识文档已重建索引。");
+    } catch (rebuildError) {
+      setError(rebuildError instanceof Error ? rebuildError.message : "重建知识索引失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleSearchKnowledge() {
+    const query = knowledgeSearchDraft.trim();
+    if (!query) {
+      setKnowledgeSearchResults([]);
+      return;
+    }
+
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      setKnowledgeSearchResults(await window.moonchat.searchKnowledge(query, 8));
+    } catch (searchError) {
+      setError(searchError instanceof Error ? searchError.message : "搜索知识库失败。");
     } finally {
       setIsBusy(false);
     }
@@ -1821,6 +1931,10 @@ export function App() {
                 <MenuBookIcon fontSize="small" />
                 <span>知识记忆</span>
               </button>
+              <button className={aiTab === "rag" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("rag")}>
+                <LibraryBooksIcon fontSize="small" />
+                <span>知识库</span>
+              </button>
               <button className={aiTab === "model" ? "ai-tab active" : "ai-tab"} onClick={() => setAiTab("model")}>
                 <TuneIcon fontSize="small" />
                 <span>模型</span>
@@ -2009,6 +2123,21 @@ export function App() {
                 }
               />
               </>
+            ) : aiTab === "rag" ? (
+              <KnowledgeBasePanel
+                documents={knowledgeDocuments}
+                embeddingStatus={knowledgeEmbeddingStatus}
+                progress={knowledgeProgress}
+                searchDraft={knowledgeSearchDraft}
+                searchResults={knowledgeSearchResults}
+                isBusy={isBusy}
+                onImport={() => void handleImportKnowledgeFiles()}
+                onRefresh={() => void refreshKnowledgeBase()}
+                onDelete={(documentId) => void handleDeleteKnowledgeDocument(documentId)}
+                onRebuild={(documentId) => void handleRebuildKnowledgeDocument(documentId)}
+                onSearchDraftChange={setKnowledgeSearchDraft}
+                onSearch={() => void handleSearchKnowledge()}
+              />
             ) : (
               <>
                 <article className="settings-panel model-settings-panel">
@@ -2205,6 +2334,163 @@ function MemoryEditor({
           保存{title}
         </button>
       </div>
+    </article>
+  );
+}
+
+function KnowledgeBasePanel({
+  documents,
+  embeddingStatus,
+  progress,
+  searchDraft,
+  searchResults,
+  isBusy,
+  onImport,
+  onRefresh,
+  onDelete,
+  onRebuild,
+  onSearchDraftChange,
+  onSearch,
+}: {
+  documents: KnowledgeDocumentSummary[];
+  embeddingStatus: {
+    ok: boolean;
+    provider: "builtin";
+    model: string;
+    message: string;
+  } | null;
+  progress: RagProgressEvent | null;
+  searchDraft: string;
+  searchResults: KnowledgeSearchResult[];
+  isBusy: boolean;
+  onImport: () => void;
+  onRefresh: () => void;
+  onDelete: (documentId: string) => void;
+  onRebuild: (documentId: string) => void;
+  onSearchDraftChange: (value: string) => void;
+  onSearch: () => void;
+}) {
+  const progressPercent = progress?.percent ?? null;
+  const progressTone = progress?.phase === "error" ? "error" : progress?.phase === "completed" ? "ok" : "active";
+  return (
+    <article className="settings-panel knowledge-panel">
+      <div className="pane-header">
+        <div>
+          <h1>知识库</h1>
+          <p>独立于 AI 记忆的 RAG 文档库，当前支持 txt / md 文本导入。</p>
+        </div>
+        <div className="header-actions">
+          <button className="ghost-button icon-only-button" onClick={onRefresh} aria-label="刷新知识库" title="刷新">
+            <RefreshIcon fontSize="small" />
+          </button>
+          <button className="primary-button icon-text-button" onClick={onImport} disabled={isBusy}>
+            <AddIcon fontSize="small" />
+            导入文档
+          </button>
+        </div>
+      </div>
+
+      <div className={embeddingStatus?.ok ? "rag-status-card ok" : "rag-status-card warning"}>
+        <strong>{embeddingStatus?.model ?? "Xenova/multilingual-e5-small"}</strong>
+        <span>{embeddingStatus?.message ?? "正在读取内置 embedding 状态。"}</span>
+      </div>
+
+      <div className={`rag-progress-card ${progressTone}`}>
+        <div className="rag-progress-top">
+          <strong>{progress?.message ?? "暂无索引任务"}</strong>
+          {progressPercent !== null ? <span>{Math.round(progressPercent)}%</span> : null}
+        </div>
+        {progressPercent !== null ? (
+          <div className="rag-progress-track" aria-hidden="true">
+            <span style={{ width: `${Math.max(0, Math.min(100, progressPercent))}%` }} />
+          </div>
+        ) : null}
+        <div className="rag-progress-meta">
+          {progress?.documentTitle ? <span>{progress.documentTitle}</span> : null}
+          {progress?.chunkIndex && progress.totalChunks ? (
+            <span>
+              {progress.chunkIndex}/{progress.totalChunks} chunks
+            </span>
+          ) : null}
+          {progress?.file ? <span>{progress.file}</span> : null}
+          {progress?.loaded && progress.total ? (
+            <span>
+              {formatBytes(progress.loaded)} / {formatBytes(progress.total)}
+            </span>
+          ) : null}
+        </div>
+        {progress?.error ? <p className="rag-progress-error">{progress.error}</p> : null}
+      </div>
+
+      <section className="rag-search-panel">
+        <div className="list-toolbar">
+          <input
+            className="search-input"
+            value={searchDraft}
+            onChange={(event) => onSearchDraftChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                onSearch();
+              }
+            }}
+            placeholder="测试知识库检索"
+          />
+          <button className="ghost-button" onClick={onSearch} disabled={isBusy || !searchDraft.trim()}>
+            搜索
+          </button>
+        </div>
+        {searchResults.length ? (
+          <div className="rag-result-stack">
+            {searchResults.map((result) => (
+              <div key={result.chunkId} className="rag-result-card">
+                <div className="memory-card-top">
+                  <strong>{result.documentTitle}</strong>
+                  <span>{result.matchType} {result.score.toFixed(2)}</span>
+                </div>
+                <p>{result.content}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
+
+      {documents.length ? (
+        <div className="knowledge-document-stack">
+          {documents.map((document) => (
+            <div className="knowledge-document-row" key={document.id}>
+              <div>
+                <strong>{document.title}</strong>
+                <p>{document.sourcePath ?? "手动文档"}</p>
+                {document.lastError ? <small>{document.lastError}</small> : null}
+              </div>
+              <span className={`knowledge-status ${document.status}`}>
+                {labelKnowledgeStatus(document.status)}
+              </span>
+              <span>{document.chunkCount} chunks</span>
+              <button
+                className="ghost-button icon-only-button"
+                onClick={() => onRebuild(document.id)}
+                disabled={isBusy}
+                aria-label="重建索引"
+                title="重建索引"
+              >
+                <RefreshIcon fontSize="small" />
+              </button>
+              <button
+                className="ghost-button icon-only-button subtle-danger"
+                onClick={() => onDelete(document.id)}
+                disabled={isBusy}
+                aria-label="删除知识文档"
+                title="删除"
+              >
+                <DeleteIcon fontSize="small" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState title="暂无知识文档" description="导入 txt 或 md 后，AI 会在回答前检索这些资料。" />
+      )}
     </article>
   );
 }
@@ -2446,6 +2732,23 @@ function labelMemoryType(memoryType: string) {
   if (memoryType === "style") return "风格记忆";
   if (memoryType === "knowledge") return "知识记忆";
   return memoryType;
+}
+
+function labelKnowledgeStatus(status: KnowledgeDocumentSummary["status"]) {
+  if (status === "indexed") return "已索引";
+  if (status === "partial") return "部分索引";
+  if (status === "failed") return "失败";
+  return "等待中";
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDateTime(value: string) {

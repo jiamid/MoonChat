@@ -1,5 +1,6 @@
 import type { DatabaseService } from "../storage/databaseService.js";
 import type { MemoryService } from "../memory/memoryService.js";
+import type { RagService } from "../rag/ragService.js";
 import type { ConversationService } from "../storage/conversationService.js";
 import type { LangChainAiService } from "../ai/langChainAiService.js";
 import { aiReplyLogs } from "../../../src/shared/db/schema.js";
@@ -13,6 +14,7 @@ export class AiOrchestratorService {
   constructor(
     private readonly database: DatabaseService,
     private readonly memory: MemoryService,
+    private readonly rag: RagService,
     private readonly conversations: ConversationService,
     private readonly langChainAi: LangChainAiService,
   ) {}
@@ -50,12 +52,15 @@ export class AiOrchestratorService {
       conversationId: input.conversationId,
       userId: conversation.externalUserId,
     });
+    const ragContext = await this.rag.buildContext(input.inboundText, 5);
 
     try {
       const reply = await this.langChainAi.generateAutoReply({
         conversationTitle: conversation.title,
         inboundText: input.inboundText,
-        memoryContext: context,
+        memoryContext: [context, ragContext ? `相关知识库:\n${ragContext}` : ""]
+          .filter(Boolean)
+          .join("\n\n"),
         recentMessages,
       });
 
@@ -77,7 +82,9 @@ export class AiOrchestratorService {
         model: this.langChainAi.getModelName(),
         promptSnapshot: JSON.stringify({
           inboundText: input.inboundText,
-          memoryContext: context,
+          memoryContext: [context, ragContext ? `相关知识库:\n${ragContext}` : ""]
+            .filter(Boolean)
+            .join("\n\n"),
           recentMessages,
         }),
         responseSnapshot: reply.trim(),
@@ -93,7 +100,9 @@ export class AiOrchestratorService {
         model: this.langChainAi.getModelName(),
         promptSnapshot: JSON.stringify({
           inboundText: input.inboundText,
-          memoryContext: context,
+          memoryContext: [context, ragContext ? `相关知识库:\n${ragContext}` : ""]
+            .filter(Boolean)
+            .join("\n\n"),
           recentMessages,
         }),
         responseSnapshot: error instanceof Error ? error.message : "Unknown AI error",
@@ -193,12 +202,14 @@ export class AiOrchestratorService {
     );
 
     const globalMemories = await this.memory.getGlobalAiMemories();
+    const ragContext = await this.rag.buildContext(input.inboundText, 6);
     const replyResult = await this.langChainAi.generateAiAssistantResponse({
       userMessage: input.inboundText,
       recentMessages,
       baseMemory: findGlobalMemory(globalMemories, "base"),
       styleMemory: findGlobalMemory(globalMemories, "style"),
       knowledgeMemory: findGlobalMemory(globalMemories, "knowledge"),
+      ragContext,
       conversationCatalog,
       userCatalog,
       workspaceOverview: {

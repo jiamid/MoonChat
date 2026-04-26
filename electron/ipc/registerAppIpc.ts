@@ -1,4 +1,4 @@
-import { ipcMain } from "electron";
+import { dialog, ipcMain } from "electron";
 import type { AppRuntime } from "../services/runtime.js";
 import type { ChannelConfig } from "../../src/shared/contracts.js";
 
@@ -31,6 +31,33 @@ export function registerAppIpc(runtime: AppRuntime) {
       await runtime.memory.upsertGlobalAiMemory(payload);
       return { ok: true };
     },
+  );
+  ipcMain.handle("rag:list-documents", async () => runtime.rag.listDocuments());
+  ipcMain.handle("rag:get-embedding-status", async () => runtime.rag.getEmbeddingStatus());
+  ipcMain.handle("rag:get-progress", async () => runtime.rag.getProgress());
+  ipcMain.handle("rag:import-files", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "导入知识库文档",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "Text documents", extensions: ["txt", "md", "markdown"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return [];
+    }
+    return runtime.rag.importFiles(result.filePaths);
+  });
+  ipcMain.handle("rag:delete-document", async (_event, documentId: string) => {
+    await runtime.rag.deleteDocument(documentId);
+    return { ok: true };
+  });
+  ipcMain.handle("rag:rebuild-document", async (_event, documentId: string) => {
+    return runtime.rag.rebuildDocument(documentId);
+  });
+  ipcMain.handle("rag:search", async (_event, payload: { query: string; limit?: number }) =>
+    runtime.rag.search(payload.query, payload.limit),
   );
   ipcMain.handle("conversation:list", async () => runtime.conversations.list());
   ipcMain.handle("conversation:get-messages", async (_event, conversationId: string) =>

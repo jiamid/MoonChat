@@ -11,6 +11,13 @@ contextBridge.exposeInMainWorld("moonchat", {
   listRelevantMemories: (payload) => ipcRenderer.invoke("memory:list-relevant", payload),
   getGlobalAiMemories: () => ipcRenderer.invoke("memory:get-global-ai"),
   updateGlobalAiMemory: (payload) => ipcRenderer.invoke("memory:update-global-ai", payload),
+  listKnowledgeDocuments: () => ipcRenderer.invoke("rag:list-documents"),
+  getKnowledgeEmbeddingStatus: () => ipcRenderer.invoke("rag:get-embedding-status"),
+  getKnowledgeProgress: () => ipcRenderer.invoke("rag:get-progress"),
+  importKnowledgeFiles: () => ipcRenderer.invoke("rag:import-files"),
+  deleteKnowledgeDocument: (documentId) => ipcRenderer.invoke("rag:delete-document", documentId),
+  rebuildKnowledgeDocument: (documentId) => ipcRenderer.invoke("rag:rebuild-document", documentId),
+  searchKnowledge: (query, limit) => ipcRenderer.invoke("rag:search", { query, limit }),
   listConversations: () => ipcRenderer.invoke("conversation:list"),
   getConversationMessages: (conversationId) =>
     ipcRenderer.invoke("conversation:get-messages", conversationId),
@@ -38,6 +45,15 @@ contextBridge.exposeInMainWorld("moonchat", {
     ipcRenderer.on("conversation:changed", wrappedListener);
     return () => {
       ipcRenderer.removeListener("conversation:changed", wrappedListener);
+    };
+  },
+  onKnowledgeProgress: (listener) => {
+    const wrappedListener = (_event, payload) => {
+      listener(payload);
+    };
+    ipcRenderer.on("rag:progress", wrappedListener);
+    return () => {
+      ipcRenderer.removeListener("rag:progress", wrappedListener);
     };
   },
 });

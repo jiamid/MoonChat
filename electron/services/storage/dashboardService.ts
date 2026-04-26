@@ -1,6 +1,12 @@
 import { count, desc, eq } from "drizzle-orm";
 import type { AppDashboardSnapshot } from "../../../src/shared/contracts.js";
-import { conversations, learningJobs, memories, messages } from "../../../src/shared/db/schema.js";
+import {
+  conversations,
+  knowledgeDocuments,
+  learningJobs,
+  memories,
+  messages,
+} from "../../../src/shared/db/schema.js";
 import type { DatabaseService } from "./databaseService.js";
 
 export class DashboardService {
@@ -10,6 +16,9 @@ export class DashboardService {
     const [conversationCount] = await this.database.db.select({ value: count() }).from(conversations);
     const [messageCount] = await this.database.db.select({ value: count() }).from(messages);
     const [memoryCount] = await this.database.db.select({ value: count() }).from(memories);
+    const [knowledgeDocumentCount] = await this.database.db
+      .select({ value: count() })
+      .from(knowledgeDocuments);
 
     const latestJobs = await this.database.db
       .select({
@@ -28,6 +37,7 @@ export class DashboardService {
         conversations: conversationCount?.value ?? 0,
         messages: messageCount?.value ?? 0,
         memories: memoryCount?.value ?? 0,
+        knowledgeDocuments: knowledgeDocumentCount?.value ?? 0,
       },
       latestJobs,
     };
