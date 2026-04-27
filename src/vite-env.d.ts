@@ -60,6 +60,7 @@ interface Window {
     rebuildKnowledgeDocument: (
       documentId: string,
     ) => Promise<import("./shared/contracts").KnowledgeDocumentSummary>;
+    openKnowledgeDocument: (documentId: string) => Promise<{ ok: boolean }>;
     searchKnowledge: (
       query: string,
       limit?: number,

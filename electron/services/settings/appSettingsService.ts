@@ -37,6 +37,7 @@ const settingsSchema = z.object({
     baseUrl: z.string().default("https://api.openai.com/v1"),
     model: z.string().default("gpt-4.1-mini"),
     temperature: z.coerce.number().default(0.4),
+    ragToolEnabled: z.boolean().default(true),
     systemPrompt: z
       .string()
       .default(
@@ -93,6 +94,7 @@ export class AppSettingsService {
         baseUrl: "https://api.openai.com/v1",
         model: "gpt-4.1-mini",
         temperature: 0.4,
+        ragToolEnabled: true,
         systemPrompt:
           "你是 MoonChat 的 AI 助手，负责在聊天聚合工作台里协助进行自然、稳妥、贴近上下文的回复。",
         autoReplySystemPrompt:

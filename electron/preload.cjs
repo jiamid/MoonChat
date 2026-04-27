@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("moonchat", {
   importKnowledgeFiles: () => ipcRenderer.invoke("rag:import-files"),
   deleteKnowledgeDocument: (documentId) => ipcRenderer.invoke("rag:delete-document", documentId),
   rebuildKnowledgeDocument: (documentId) => ipcRenderer.invoke("rag:rebuild-document", documentId),
+  openKnowledgeDocument: (documentId) => ipcRenderer.invoke("rag:open-document", documentId),
   searchKnowledge: (query, limit) => ipcRenderer.invoke("rag:search", { query, limit }),
   listConversations: () => ipcRenderer.invoke("conversation:list"),
   getConversationMessages: (conversationId) =>

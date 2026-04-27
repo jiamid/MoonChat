@@ -1,4 +1,4 @@
-import { dialog, ipcMain } from "electron";
+import { dialog, ipcMain, shell } from "electron";
 import type { AppRuntime } from "../services/runtime.js";
 import type { ChannelConfig } from "../../src/shared/contracts.js";
 
@@ -55,6 +55,18 @@ export function registerAppIpc(runtime: AppRuntime) {
   });
   ipcMain.handle("rag:rebuild-document", async (_event, documentId: string) => {
     return runtime.rag.rebuildDocument(documentId);
+  });
+  ipcMain.handle("rag:open-document", async (_event, documentId: string) => {
+    const document = (await runtime.rag.listDocuments()).find((item) => item.id === documentId);
+    if (!document?.sourcePath) {
+      throw new Error("这个知识文档没有可打开的本地文件。");
+    }
+
+    const errorMessage = await shell.openPath(document.sourcePath);
+    if (errorMessage) {
+      throw new Error(errorMessage);
+    }
+    return { ok: true };
   });
   ipcMain.handle("rag:search", async (_event, payload: { query: string; limit?: number }) =>
     runtime.rag.search(payload.query, payload.limit),

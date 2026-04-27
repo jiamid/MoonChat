@@ -22,6 +22,7 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PsychologyIcon from "@mui/icons-material/Psychology";
 import logoSrc from "../logo.png";
 import type {
@@ -55,6 +56,9 @@ type ChannelConnectionStatus = {
   checkedAt: string;
 };
 
+const workspaceViewStorageKey = "moonchat:last-view";
+const aiTabStorageKey = "moonchat:last-ai-tab";
+
 const defaultSettings: AppSettings = {
   ui: { themeMode: "dark" },
   telegram: { botToken: "" },
@@ -65,6 +69,7 @@ const defaultSettings: AppSettings = {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
     temperature: 0.4,
+    ragToolEnabled: true,
     systemPrompt:
       "你是 MoonChat 的 AI 助手，负责在聊天聚合工作台里协助进行自然、稳妥、贴近上下文的回复。",
     autoReplySystemPrompt:
@@ -74,8 +79,8 @@ const defaultSettings: AppSettings = {
 
 export function App() {
   const isMac = navigator.userAgent.includes("Mac");
-  const [view, setView] = useState<AppView>("ai");
-  const [aiTab, setAiTab] = useState<AiTab>("assistant");
+  const [view, setViewState] = useState<AppView>(() => readStoredView());
+  const [aiTab, setAiTabState] = useState<AiTab>(() => readStoredAiTab());
   const [dashboard, setDashboard] = useState<AppDashboardSnapshot | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(defaultSettings);
@@ -128,6 +133,15 @@ export function App() {
   const liveRefreshRunningRef = useRef(false);
   const pendingConversationChangeRef = useRef<{ conversationId: string | null } | null>(null);
   const previousChannelStatusRef = useRef<Record<string, ChannelConnectionStatus>>({});
+
+  const setView = (nextView: AppView) => {
+    setViewState(nextView);
+    window.localStorage.setItem(workspaceViewStorageKey, nextView);
+  };
+  const setAiTab = (nextAiTab: AiTab) => {
+    setAiTabState(nextAiTab);
+    window.localStorage.setItem(aiTabStorageKey, nextAiTab);
+  };
 
   const selectedConversation =
     conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
@@ -682,6 +696,7 @@ export function App() {
           baseUrl: settingsDraft.ai.baseUrl.trim(),
           model: settingsDraft.ai.model.trim(),
           temperature: Number(settingsDraft.ai.temperature),
+          ragToolEnabled: settingsDraft.ai.ragToolEnabled,
           systemPrompt: settingsDraft.ai.systemPrompt.trim(),
           autoReplySystemPrompt: settingsDraft.ai.autoReplySystemPrompt.trim(),
         },
@@ -790,6 +805,16 @@ export function App() {
     }
   }
 
+  async function handleOpenKnowledgeDocument(documentId: string) {
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await window.moonchat.openKnowledgeDocument(documentId);
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : "打开知识文档失败。");
+    }
+  }
+
   async function handleSearchKnowledge() {
     const query = knowledgeSearchDraft.trim();
     if (!query) {
@@ -806,6 +831,51 @@ export function App() {
       setError(searchError instanceof Error ? searchError.message : "搜索知识库失败。");
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleRefreshKnowledgeBase() {
+    setIsBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await refreshKnowledgeBase();
+      setStatusMessage("知识库列表、索引进度和 embedding 状态已刷新。");
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : "刷新知识库状态失败。");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function handleKnowledgeSearchDraftChange(value: string) {
+    setKnowledgeSearchDraft(value);
+    if (!value.trim()) {
+      setKnowledgeSearchResults([]);
+    }
+  }
+
+  async function handleToggleRagTool(enabled: boolean) {
+    setError(null);
+    setStatusMessage(null);
+    setSettingsDraft((current) => ({
+      ...current,
+      ai: { ...current.ai, ragToolEnabled: enabled },
+    }));
+
+    try {
+      const saved = await window.moonchat.updateSettings({
+        ...settings,
+        ai: {
+          ...settings.ai,
+          ragToolEnabled: enabled,
+        },
+      });
+      setSettings(saved);
+      setSettingsDraft(saved);
+    } catch (toggleError) {
+      setSettingsDraft(settings);
+      setError(toggleError instanceof Error ? toggleError.message : "切换知识库工具失败。");
     }
   }
 
@@ -2127,15 +2197,18 @@ export function App() {
               <KnowledgeBasePanel
                 documents={knowledgeDocuments}
                 embeddingStatus={knowledgeEmbeddingStatus}
+                ragToolEnabled={settingsDraft.ai.ragToolEnabled}
                 progress={knowledgeProgress}
                 searchDraft={knowledgeSearchDraft}
                 searchResults={knowledgeSearchResults}
                 isBusy={isBusy}
                 onImport={() => void handleImportKnowledgeFiles()}
-                onRefresh={() => void refreshKnowledgeBase()}
+                onRefresh={() => void handleRefreshKnowledgeBase()}
+                onToggleRagTool={(enabled) => void handleToggleRagTool(enabled)}
                 onDelete={(documentId) => void handleDeleteKnowledgeDocument(documentId)}
                 onRebuild={(documentId) => void handleRebuildKnowledgeDocument(documentId)}
-                onSearchDraftChange={setKnowledgeSearchDraft}
+                onOpen={(documentId) => void handleOpenKnowledgeDocument(documentId)}
+                onSearchDraftChange={handleKnowledgeSearchDraftChange}
                 onSearch={() => void handleSearchKnowledge()}
               />
             ) : (
@@ -2341,14 +2414,17 @@ function MemoryEditor({
 function KnowledgeBasePanel({
   documents,
   embeddingStatus,
+  ragToolEnabled,
   progress,
   searchDraft,
   searchResults,
   isBusy,
   onImport,
   onRefresh,
+  onToggleRagTool,
   onDelete,
   onRebuild,
+  onOpen,
   onSearchDraftChange,
   onSearch,
 }: {
@@ -2359,14 +2435,17 @@ function KnowledgeBasePanel({
     model: string;
     message: string;
   } | null;
+  ragToolEnabled: boolean;
   progress: RagProgressEvent | null;
   searchDraft: string;
   searchResults: KnowledgeSearchResult[];
   isBusy: boolean;
   onImport: () => void;
   onRefresh: () => void;
+  onToggleRagTool: (enabled: boolean) => void;
   onDelete: (documentId: string) => void;
   onRebuild: (documentId: string) => void;
+  onOpen: (documentId: string) => void;
   onSearchDraftChange: (value: string) => void;
   onSearch: () => void;
 }) {
@@ -2380,7 +2459,30 @@ function KnowledgeBasePanel({
           <p>独立于 AI 记忆的 RAG 文档库，当前支持 txt / md 文本导入。</p>
         </div>
         <div className="header-actions">
-          <button className="ghost-button icon-only-button" onClick={onRefresh} aria-label="刷新知识库" title="刷新">
+          <button
+            className="rag-tool-switch"
+            data-mode={ragToolEnabled ? "enabled" : "disabled"}
+            onClick={() => onToggleRagTool(!ragToolEnabled)}
+            disabled={isBusy}
+            aria-label={ragToolEnabled ? "关闭 AI 调用知识库工具" : "开启 AI 调用知识库工具"}
+            aria-pressed={ragToolEnabled}
+            title={ragToolEnabled ? "AI 可按需调用知识库" : "AI 不会看到知识库工具"}
+          >
+            <span className="rag-tool-switch-thumb" aria-hidden="true" />
+            <span className="rag-tool-switch-option rag-tool-switch-option-off" aria-hidden="true">
+              关
+            </span>
+            <span className="rag-tool-switch-option rag-tool-switch-option-on" aria-hidden="true">
+              开
+            </span>
+          </button>
+          <button
+            className="ghost-button icon-only-button"
+            onClick={onRefresh}
+            disabled={isBusy}
+            aria-label="刷新知识库状态"
+            title="刷新知识库列表、索引进度和 embedding 状态"
+          >
             <RefreshIcon fontSize="small" />
           </button>
           <button className="primary-button icon-text-button" onClick={onImport} disabled={isBusy}>
@@ -2467,6 +2569,15 @@ function KnowledgeBasePanel({
                 {labelKnowledgeStatus(document.status)}
               </span>
               <span>{document.chunkCount} chunks</span>
+              <button
+                className="ghost-button icon-only-button"
+                onClick={() => onOpen(document.id)}
+                disabled={isBusy || !document.sourcePath}
+                aria-label="打开知识文档"
+                title={document.sourcePath ? "打开原文档" : "没有可打开的本地文件"}
+              >
+                <OpenInNewIcon fontSize="small" />
+              </button>
               <button
                 className="ghost-button icon-only-button"
                 onClick={() => onRebuild(document.id)}
@@ -2872,6 +2983,23 @@ function getChannelRowStatus(
     description: channelStatus.message || `${describeChannel(channel.type)} 未连接`,
     tone: "warning",
   };
+}
+
+function readStoredView(): AppView {
+  const stored = window.localStorage.getItem(workspaceViewStorageKey);
+  return stored === "chat" || stored === "channels" || stored === "ai" ? stored : "ai";
+}
+
+function readStoredAiTab(): AiTab {
+  const stored = window.localStorage.getItem(aiTabStorageKey);
+  return stored === "assistant" ||
+    stored === "base" ||
+    stored === "style" ||
+    stored === "knowledge" ||
+    stored === "rag" ||
+    stored === "model"
+    ? stored
+    : "assistant";
 }
 
 function readFileAsDataUrl(file: File) {

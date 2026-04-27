@@ -64,6 +64,7 @@ export interface AppSettings {
     temperature: number;
     systemPrompt: string;
     autoReplySystemPrompt: string;
+    ragToolEnabled: boolean;
   };
 }
 

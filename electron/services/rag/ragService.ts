@@ -11,8 +11,9 @@ import type {
 } from "../../../src/shared/contracts.js";
 import { EmbeddingService } from "./embeddingService.js";
 
-const CHUNK_SIZE = 900;
-const CHUNK_OVERLAP = 140;
+const CHUNK_SIZE = 520;
+const CHUNK_OVERLAP = 90;
+const MIN_CHUNK_SIZE = 180;
 
 export class RagService {
   private readonly embeddings: EmbeddingService;
@@ -183,7 +184,7 @@ export class RagService {
           ),
         });
 
-    if (existing && existing.status === "indexed" && existing.contentHash === contentHash) {
+    if (!existingDocumentId && existing && existing.status === "indexed" && existing.contentHash === contentHash) {
       return toDocumentSummary(existing);
     }
 
@@ -365,29 +366,46 @@ function normalizeText(text: string) {
 }
 
 function splitIntoChunks(content: string) {
-  const paragraphs = content.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  const segments = splitIntoSegments(content);
   const chunks: string[] = [];
   let current = "";
 
-  for (const paragraph of paragraphs) {
-    if ((current + "\n\n" + paragraph).trim().length <= CHUNK_SIZE) {
-      current = (current ? `${current}\n\n` : "") + paragraph;
+  for (const segment of segments) {
+    const separator = current.includes("\n") || segment.includes("\n") ? "\n\n" : "";
+    const candidate = (current ? `${current}${separator}${segment}` : segment).trim();
+    if (candidate.length <= CHUNK_SIZE) {
+      current = candidate;
+      continue;
+    }
+
+    if (current && current.length >= MIN_CHUNK_SIZE) {
+      chunks.push(current);
+      current = buildOverlapSeed(current);
+    }
+
+    const nextCandidate = (current ? `${current}\n\n${segment}` : segment).trim();
+    if (nextCandidate.length <= CHUNK_SIZE) {
+      current = nextCandidate;
       continue;
     }
 
     if (current) {
       chunks.push(current);
+      current = "";
     }
 
-    if (paragraph.length <= CHUNK_SIZE) {
-      current = paragraph;
+    if (segment.length <= CHUNK_SIZE) {
+      current = segment;
       continue;
     }
 
-    for (let start = 0; start < paragraph.length; start += CHUNK_SIZE - CHUNK_OVERLAP) {
-      chunks.push(paragraph.slice(start, start + CHUNK_SIZE).trim());
+    for (const piece of splitLongSegment(segment)) {
+      if (piece.length >= MIN_CHUNK_SIZE || !chunks.length) {
+        chunks.push(piece);
+      } else {
+        chunks[chunks.length - 1] = `${chunks[chunks.length - 1]}\n\n${piece}`.trim();
+      }
     }
-    current = "";
   }
 
   if (current) {
@@ -395,6 +413,55 @@ function splitIntoChunks(content: string) {
   }
 
   return chunks.filter(Boolean);
+}
+
+function splitIntoSegments(content: string) {
+  const blocks = content
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const segments: string[] = [];
+
+  for (const block of blocks) {
+    if (block.length <= CHUNK_SIZE) {
+      segments.push(block);
+      continue;
+    }
+
+    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (lines.length > 1 && lines.every((line) => line.length <= CHUNK_SIZE)) {
+      segments.push(...lines);
+      continue;
+    }
+
+    segments.push(...splitBySentence(block));
+  }
+
+  return segments.length ? segments : [content];
+}
+
+function splitBySentence(text: string) {
+  const matches = text.match(/[^。！？!?；;.\n]+[。！？!?；;.]?/g);
+  return matches?.map((item) => item.trim()).filter(Boolean) ?? [text.trim()];
+}
+
+function splitLongSegment(text: string) {
+  const chunks: string[] = [];
+  const step = Math.max(1, CHUNK_SIZE - CHUNK_OVERLAP);
+  for (let start = 0; start < text.length; start += step) {
+    chunks.push(text.slice(start, start + CHUNK_SIZE).trim());
+  }
+  return chunks.filter(Boolean);
+}
+
+function buildOverlapSeed(text: string) {
+  if (text.length <= CHUNK_OVERLAP) {
+    return text;
+  }
+
+  const seed = text.slice(-CHUNK_OVERLAP).trim();
+  const boundary = seed.search(/[。！？!?；;.\n]\s*/);
+  return boundary >= 0 ? seed.slice(boundary + 1).trim() : seed;
 }
 
 function estimateTokens(text: string) {

@@ -52,16 +52,23 @@ export class AiOrchestratorService {
       conversationId: input.conversationId,
       userId: conversation.externalUserId,
     });
-    const ragContext = await this.rag.buildContext(input.inboundText, 5);
+    const ragToolCalls: Array<{ query: string; limit: number; hit: boolean }> = [];
+    const searchKnowledgeBase = this.langChainAi.isRagToolEnabled()
+      ? async (query: string, limit?: number) => {
+          const resolvedLimit = limit ?? 5;
+          const context = await this.rag.buildContext(query, resolvedLimit);
+          ragToolCalls.push({ query, limit: resolvedLimit, hit: Boolean(context) });
+          return context;
+        }
+      : undefined;
 
     try {
       const reply = await this.langChainAi.generateAutoReply({
         conversationTitle: conversation.title,
         inboundText: input.inboundText,
-        memoryContext: [context, ragContext ? `相关知识库:\n${ragContext}` : ""]
-          .filter(Boolean)
-          .join("\n\n"),
+        memoryContext: context,
         recentMessages,
+        searchKnowledgeBase,
       });
 
       if (!reply?.trim()) {
@@ -82,9 +89,9 @@ export class AiOrchestratorService {
         model: this.langChainAi.getModelName(),
         promptSnapshot: JSON.stringify({
           inboundText: input.inboundText,
-          memoryContext: [context, ragContext ? `相关知识库:\n${ragContext}` : ""]
-            .filter(Boolean)
-            .join("\n\n"),
+          memoryContext: context,
+          ragToolEnabled: Boolean(searchKnowledgeBase),
+          ragToolCalls,
           recentMessages,
         }),
         responseSnapshot: reply.trim(),
@@ -100,9 +107,9 @@ export class AiOrchestratorService {
         model: this.langChainAi.getModelName(),
         promptSnapshot: JSON.stringify({
           inboundText: input.inboundText,
-          memoryContext: [context, ragContext ? `相关知识库:\n${ragContext}` : ""]
-            .filter(Boolean)
-            .join("\n\n"),
+          memoryContext: context,
+          ragToolEnabled: Boolean(searchKnowledgeBase),
+          ragToolCalls,
           recentMessages,
         }),
         responseSnapshot: error instanceof Error ? error.message : "Unknown AI error",
@@ -202,14 +209,22 @@ export class AiOrchestratorService {
     );
 
     const globalMemories = await this.memory.getGlobalAiMemories();
-    const ragContext = await this.rag.buildContext(input.inboundText, 6);
+    const ragToolCalls: Array<{ query: string; limit: number; hit: boolean }> = [];
+    const searchKnowledgeBase = this.langChainAi.isRagToolEnabled()
+      ? async (query: string, limit?: number) => {
+          const resolvedLimit = limit ?? 6;
+          const context = await this.rag.buildContext(query, resolvedLimit);
+          ragToolCalls.push({ query, limit: resolvedLimit, hit: Boolean(context) });
+          return context;
+        }
+      : undefined;
     const replyResult = await this.langChainAi.generateAiAssistantResponse({
       userMessage: input.inboundText,
       recentMessages,
       baseMemory: findGlobalMemory(globalMemories, "base"),
       styleMemory: findGlobalMemory(globalMemories, "style"),
       knowledgeMemory: findGlobalMemory(globalMemories, "knowledge"),
-      ragContext,
+      searchKnowledgeBase,
       conversationCatalog,
       userCatalog,
       workspaceOverview: {
@@ -342,6 +357,8 @@ export class AiOrchestratorService {
         imageDataUrl: input.imageDataUrl,
         recentMessages,
         mode: "local_ai_chat",
+        ragToolEnabled: Boolean(searchKnowledgeBase),
+        ragToolCalls,
         memoryUpdates: replyResult.memoryUpdates,
       }),
       responseSnapshot: replyResult.reply.trim(),

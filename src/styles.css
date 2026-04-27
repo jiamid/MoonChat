@@ -1412,6 +1412,69 @@ select {
   border-color: rgba(255, 184, 107, 0.34);
 }
 
+.rag-tool-switch {
+  position: relative;
+  width: 60px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  color: var(--rail-text);
+  background: color-mix(in srgb, var(--surface-muted) 84%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-color) 88%, transparent);
+  cursor: pointer;
+}
+
+.rag-tool-switch:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.rag-tool-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--accent-solid);
+  box-shadow: var(--accent-shadow);
+  transition: transform 180ms ease;
+}
+
+.rag-tool-switch[data-mode="enabled"] .rag-tool-switch-thumb {
+  transform: translateX(30px);
+}
+
+.rag-tool-switch-option {
+  position: absolute;
+  top: 2px;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition: color 180ms ease;
+}
+
+.rag-tool-switch-option-off {
+  left: 2px;
+}
+
+.rag-tool-switch-option-on {
+  right: 2px;
+}
+
+.rag-tool-switch[data-mode="disabled"] .rag-tool-switch-option-off,
+.rag-tool-switch[data-mode="enabled"] .rag-tool-switch-option-on {
+  color: #fff;
+}
+
 .rag-progress-card {
   display: grid;
   gap: 10px;
@@ -1491,7 +1554,12 @@ select {
 }
 
 .rag-search-panel .list-toolbar {
+  grid-template-columns: minmax(0, 1fr) auto;
   margin: 0;
+}
+
+.rag-search-panel .search-input {
+  min-width: 0;
 }
 
 .rag-result-stack,
@@ -1522,7 +1590,7 @@ select {
 .knowledge-document-row {
   min-height: 72px;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 96px 96px 40px 40px;
+  grid-template-columns: minmax(220px, 1fr) 96px 96px 40px 40px 40px;
   align-items: center;
   gap: 12px;
   padding: 14px 16px;

@@ -76,6 +76,8 @@ const api = {
     ipcRenderer.invoke("rag:delete-document", documentId),
   rebuildKnowledgeDocument: (documentId: string): Promise<KnowledgeDocumentSummary> =>
     ipcRenderer.invoke("rag:rebuild-document", documentId),
+  openKnowledgeDocument: (documentId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("rag:open-document", documentId),
   searchKnowledge: (query: string, limit?: number): Promise<KnowledgeSearchResult[]> =>
     ipcRenderer.invoke("rag:search", { query, limit }),
   onKnowledgeProgress: (listener: (payload: RagProgressEvent) => void): (() => void) => {
