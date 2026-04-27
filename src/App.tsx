@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -87,6 +88,7 @@ export function App() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [loadedMessagesConversationId, setLoadedMessagesConversationId] = useState<string | null>(null);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [globalAiMemories, setGlobalAiMemories] = useState<MemoryEntry[]>([]);
   const [knowledgeDocuments, setKnowledgeDocuments] = useState<KnowledgeDocumentSummary[]>([]);
@@ -125,14 +127,22 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const aiImageInputRef = useRef<HTMLInputElement | null>(null);
   const aiComposerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const aiMessageCanvasRef = useRef<HTMLDivElement | null>(null);
+  const chatMessageCanvasRef = useRef<HTMLDivElement | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const previousAiMessageCountRef = useRef(0);
   const previousChatMessageCountRef = useRef(0);
+  const previousAiConversationIdRef = useRef<string | null>(null);
+  const previousChatConversationIdRef = useRef<string | null>(null);
+  const [readyAiConversationId, setReadyAiConversationId] = useState<string | null>(null);
+  const [readyChatConversationId, setReadyChatConversationId] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const liveRefreshRunningRef = useRef(false);
   const pendingConversationChangeRef = useRef<{ conversationId: string | null } | null>(null);
   const previousChannelStatusRef = useRef<Record<string, ChannelConnectionStatus>>({});
+  const latestMessageRequestRef = useRef<string | null>(null);
+  const previousLoadedSelectionRef = useRef<string | null>(null);
 
   const setView = (nextView: AppView) => {
     setViewState(nextView);
@@ -268,7 +278,13 @@ export function App() {
   }
 
   async function refreshMessages(conversationId: string) {
-    setMessages(await window.moonchat.getConversationMessages(conversationId));
+    latestMessageRequestRef.current = conversationId;
+    const nextMessages = await window.moonchat.getConversationMessages(conversationId);
+    if (latestMessageRequestRef.current !== conversationId) {
+      return;
+    }
+    setMessages(nextMessages);
+    setLoadedMessagesConversationId(conversationId);
   }
 
   async function refreshMemories(conversation: ConversationSummary) {
@@ -375,10 +391,16 @@ export function App() {
   useEffect(() => {
     if (!selectedConversationId) {
       setMessages([]);
+      setLoadedMessagesConversationId(null);
       setMemories([]);
+      previousLoadedSelectionRef.current = null;
       return;
     }
 
+    if (previousLoadedSelectionRef.current !== selectedConversationId) {
+      setLoadedMessagesConversationId(null);
+      previousLoadedSelectionRef.current = selectedConversationId;
+    }
     const conversation = conversations.find((item) => item.id === selectedConversationId);
     void refreshMessages(selectedConversationId);
     if (conversation) {
@@ -401,29 +423,39 @@ export function App() {
     setParticipantLabelDraft(selectedConversation?.participantLabel ?? "");
   }, [selectedConversation?.id, selectedConversation?.participantLabel]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const activeConversationId = isAssistantView ? activeConversation?.id ?? null : null;
     const hasNewAssistantMessage =
       isAssistantView &&
-      messages.length > previousAiMessageCountRef.current;
+      loadedMessagesConversationId === activeConversationId &&
+      (messages.length > previousAiMessageCountRef.current ||
+        activeConversationId !== previousAiConversationIdRef.current);
 
     if (hasNewAssistantMessage) {
-      aiMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      scrollCanvasToBottom(aiMessageCanvasRef.current);
+      setReadyAiConversationId(activeConversationId);
     }
 
     previousAiMessageCountRef.current = messages.length;
-  }, [isAssistantView, messages]);
+    previousAiConversationIdRef.current = activeConversationId;
+  }, [activeConversation?.id, isAssistantView, loadedMessagesConversationId, messages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const activeConversationId = view === "chat" ? selectedConversationId : null;
     const hasNewChatMessage =
       view === "chat" &&
-      messages.length > previousChatMessageCountRef.current;
+      loadedMessagesConversationId === activeConversationId &&
+      (messages.length > previousChatMessageCountRef.current ||
+        activeConversationId !== previousChatConversationIdRef.current);
 
     if (hasNewChatMessage) {
-      chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      scrollCanvasToBottom(chatMessageCanvasRef.current);
+      setReadyChatConversationId(activeConversationId);
     }
 
     previousChatMessageCountRef.current = messages.length;
-  }, [messages, view]);
+    previousChatConversationIdRef.current = activeConversationId;
+  }, [loadedMessagesConversationId, messages, selectedConversationId, view]);
 
   useEffect(() => {
     if (toastTimerRef.current) {
@@ -497,6 +529,7 @@ export function App() {
         } else {
           if (!nextSelectedConversationId) {
             setMessages([]);
+            setLoadedMessagesConversationId(null);
           }
         }
 
@@ -589,7 +622,7 @@ export function App() {
         aiImageInputRef.current.value = "";
       }
       window.requestAnimationFrame(() => {
-        aiMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+        scrollCanvasToBottom(aiMessageCanvasRef.current);
         aiComposerTextareaRef.current?.focus();
       });
     }
@@ -1863,7 +1896,15 @@ export function App() {
                 </section>
               ) : null}
 
-              <div className="message-canvas chat-message-canvas">
+              <div
+                ref={chatMessageCanvasRef}
+                className={
+                  readyChatConversationId === selectedConversationId &&
+                  loadedMessagesConversationId === selectedConversationId
+                    ? "message-canvas chat-message-canvas"
+                    : "message-canvas chat-message-canvas message-canvas-positioning"
+                }
+              >
                 {!selectedConversation ? (
                   <EmptyState title="还没有打开会话" description="选择左侧会话后，在这里查看与回复消息。" />
                 ) : filteredMessages.length === 0 ? (
@@ -2046,7 +2087,15 @@ export function App() {
                         <DeleteIcon fontSize="small" />
                       </button>
                     </div>
-                    <div className="message-canvas assistant-message-canvas">
+                    <div
+                      ref={aiMessageCanvasRef}
+                      className={
+                        readyAiConversationId === activeConversation?.id &&
+                        loadedMessagesConversationId === activeConversation?.id
+                          ? "message-canvas assistant-message-canvas"
+                          : "message-canvas assistant-message-canvas message-canvas-positioning"
+                      }
+                    >
                       {!activeConversation ? (
                         <EmptyState title="AI 助手暂不可用" description="请刷新页面后再试。" />
                       ) : (
@@ -3000,6 +3049,13 @@ function readStoredAiTab(): AiTab {
     stored === "model"
     ? stored
     : "assistant";
+}
+
+function scrollCanvasToBottom(canvas: HTMLDivElement | null) {
+  if (!canvas) {
+    return;
+  }
+  canvas.scrollTop = canvas.scrollHeight;
 }
 
 function readFileAsDataUrl(file: File) {

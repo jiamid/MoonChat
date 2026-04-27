@@ -1182,6 +1182,10 @@ select {
   min-height: 0;
 }
 
+.message-canvas-positioning {
+  visibility: hidden;
+}
+
 .chat-message-canvas {
   padding: 14px 14px 8px;
   border-radius: 0;
