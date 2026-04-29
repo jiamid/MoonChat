@@ -1,9 +1,15 @@
 import { TelegramClient, Api } from "telegram";
 import { NewMessage, type NewMessageEvent } from "telegram/events/NewMessage.js";
+import { returnBigInt } from "telegram/Helpers.js";
+import { CustomFile } from "telegram/client/uploads.js";
 import { StringSession } from "telegram/sessions/StringSession.js";
 import type { ChannelConfig } from "../../../src/shared/contracts.js";
 import type { ConversationService } from "../storage/conversationService.js";
 import type { AiOrchestratorService } from "../orchestration/aiOrchestratorService.js";
+
+const RECENT_HISTORY_LIMIT = 30;
+const TELEGRAM_USER_API_ID = 34936987;
+const TELEGRAM_USER_API_HASH = "224905010bbb75548bb767a1628c8ded";
 
 type TelegramUserInstance = {
   channel: ChannelConfig;
@@ -26,10 +32,16 @@ type ChannelConnectionStatus = {
   checkedAt: string;
 };
 
+type ResolvedTelegramUser = {
+  user: Api.User | null;
+  inputEntity: Api.TypeInputPeer | null;
+};
+
 export class TelegramUserService {
   private readonly clients = new Map<string, TelegramUserInstance>();
   private readonly pendingLogins = new Map<string, PendingLogin>();
   private readonly statuses = new Map<string, ChannelConnectionStatus>();
+  private readonly userEntityCache = new Map<string, ResolvedTelegramUser>();
 
   constructor(
     private readonly conversations: ConversationService,
@@ -42,8 +54,6 @@ export class TelegramUserService {
       (channel) =>
         channel.type === "telegram_user" &&
         channel.enabled &&
-        channel.apiId &&
-        channel.apiHash?.trim() &&
         channel.phoneNumber?.trim(),
     );
     const activeIds = new Set(telegramUserChannels.map((channel) => channel.id));
@@ -137,9 +147,59 @@ export class TelegramUserService {
     };
   }
 
-  async sendManualMessage(channelId: string | null | undefined, chatId: string, text: string) {
+  async sendManualMessage(
+    channelId: string | null | undefined,
+    chatId: string,
+    text: string,
+    options?: {
+      imageDataUrl?: string;
+      imageMimeType?: string;
+      attachmentDataUrl?: string;
+      attachmentMimeType?: string;
+      attachmentKind?: string;
+      attachmentFileName?: string;
+    },
+  ) {
     const client = this.resolveClient(channelId);
-    return client.sendMessage(chatId, { message: text });
+    const resolved = await this.resolvePrivateUser(client, channelId ?? "default", chatId);
+    const entity = resolved.inputEntity ?? toPeerUser(chatId);
+    const attachmentDataUrl = options?.attachmentDataUrl ?? options?.imageDataUrl;
+    const attachmentMimeType = options?.attachmentMimeType ?? options?.imageMimeType;
+    if (attachmentDataUrl) {
+      const buffer = dataUrlToBuffer(attachmentDataUrl);
+      const fileName = options?.attachmentFileName || `moonchat-file.${mimeToExtension(attachmentMimeType)}`;
+      const file = new CustomFile(fileName, buffer.length, "", buffer);
+      return client.sendFile(entity, {
+        file,
+        caption: text || undefined,
+      });
+    }
+    return client.sendMessage(entity, { message: text });
+  }
+
+  async syncRecentHistory(input: {
+    channelId: string | null | undefined;
+    chatId: string;
+    conversationId: string;
+    fallbackSenderId: string;
+  }) {
+    const client = this.resolveClient(input.channelId);
+    const resolved = await this.resolvePrivateUser(
+      client,
+      input.channelId ?? "default",
+      input.fallbackSenderId || input.chatId,
+    );
+    const syncedCount = await this.syncRecentPrivateHistory({
+      client,
+      channelId: input.channelId ?? "default",
+      chatId: input.chatId,
+      conversationId: input.conversationId,
+      fallbackSenderId: input.fallbackSenderId || input.chatId,
+      inputEntity: resolved.inputEntity,
+      throwOnError: true,
+    });
+    this.conversations.notifyChanged(input.conversationId);
+    return { ok: true, syncedCount };
   }
 
   async getConnectionStatus(channel: ChannelConfig) {
@@ -150,7 +210,7 @@ export class TelegramUserService {
         message: "渠道已停用。",
       });
     }
-    if (!channel.apiId || !channel.apiHash?.trim() || !channel.phoneNumber?.trim()) {
+    if (!channel.phoneNumber?.trim()) {
       return this.setStatus(channel.id, {
         connected: false,
         needsLogin: true,
@@ -342,22 +402,26 @@ export class TelegramUserService {
 
   private async processMessage(channelId: string, event: NewMessageEvent) {
     try {
-      if (!event.isPrivate) {
-        return;
-      }
-
       const message = event.message;
-      const inboundText = message.message;
+      const inboundText = message.message ?? "";
       const chatId = event.chatId?.toString();
       const senderId = message.senderId?.toString() ?? chatId;
-      if (!inboundText || !chatId || !senderId) {
+      if (chatId?.startsWith("-")) {
+        return;
+      }
+      if (!chatId || !senderId || !event.client) {
+        return;
+      }
+      const attachment = await downloadTelegramUserMedia(event.client, message);
+      const replyToMessageId = getTelegramUserReplyToMessageId(message);
+      const messageText = inboundText || describeTelegramUserMessage(message, attachment);
+      if (!messageText && !attachment?.dataUrl && !replyToMessageId) {
         return;
       }
 
-      const sender = message.senderId && event.client
-        ? await event.client.getEntity(message.senderId)
-        : undefined;
-      const user = sender instanceof Api.User ? sender : null;
+      const sender = message.sender;
+      const resolved = await this.resolvePrivateUser(event.client, channelId, senderId);
+      const user = sender instanceof Api.User ? sender : resolved.user;
       if (user?.self) {
         return;
       }
@@ -371,18 +435,34 @@ export class TelegramUserService {
         username: user?.username,
       });
 
-      await this.conversations.appendInboundTelegramMessage({
+      await this.syncRecentPrivateHistory({
+        client: event.client,
+        channelId,
+        chatId,
+        conversationId: conversation.id,
+        fallbackSenderId: senderId,
+        inputEntity: resolved.inputEntity,
+      });
+
+      await this.conversations.upsertTelegramUserMessage({
         conversationId: conversation.id,
         externalMessageId: String(message.id),
         senderId,
-        text: inboundText,
-        sourceType: "telegram_user",
+        text: messageText,
+        messageRole: "inbound",
+        senderType: "user",
+        createdAt: formatTelegramMessageDate(message.date),
+        attachmentDataUrl: attachment?.dataUrl,
+        attachmentKind: attachment?.kind,
+        attachmentMimeType: attachment?.mimeType,
+        attachmentFileName: attachment?.fileName,
+        replyToMessageId,
       });
 
       const reply = await this.ai.handlePotentialAutoReply({
         conversationId: conversation.id,
         senderId,
-        inboundText,
+        inboundText: messageText || `[${attachment?.kind ?? "消息"}]`,
       });
 
       if (reply) {
@@ -395,21 +475,110 @@ export class TelegramUserService {
       });
     }
   }
+
+  private async syncRecentPrivateHistory(input: {
+    client: TelegramClient;
+    channelId: string;
+    chatId: string;
+    conversationId: string;
+    fallbackSenderId: string;
+    inputEntity: Api.TypeInputPeer | null;
+    throwOnError?: boolean;
+  }) {
+    let syncedCount = 0;
+    try {
+      const history = await input.client.getMessages(input.inputEntity ?? toPeerUser(input.chatId), {
+        limit: RECENT_HISTORY_LIMIT,
+      });
+      const ordered = [...history].sort((left, right) => Number(left.id) - Number(right.id));
+
+      for (const message of ordered) {
+        if (!(message instanceof Api.Message)) {
+          continue;
+        }
+        const attachment = await downloadTelegramUserMedia(input.client, message);
+        const replyToMessageId = getTelegramUserReplyToMessageId(message);
+        const messageText = message.message?.trim() || describeTelegramUserMessage(message, attachment);
+        if (!messageText && !attachment?.dataUrl && !replyToMessageId) {
+          continue;
+        }
+
+        const isOutbound = Boolean(message.out);
+        await this.conversations.upsertTelegramUserMessage({
+          conversationId: input.conversationId,
+          externalMessageId: String(message.id),
+          senderId: message.senderId?.toString() ?? (isOutbound ? "telegram-user-self" : input.fallbackSenderId),
+          text: messageText,
+          messageRole: isOutbound ? "outbound" : "inbound",
+          senderType: isOutbound ? "human_agent" : "user",
+          createdAt: formatTelegramMessageDate(message.date),
+          attachmentDataUrl: attachment?.dataUrl,
+          attachmentKind: attachment?.kind,
+          attachmentMimeType: attachment?.mimeType,
+          attachmentFileName: attachment?.fileName,
+          replyToMessageId,
+        });
+        syncedCount += 1;
+      }
+      return syncedCount;
+    } catch (error) {
+      console.error("Failed to sync Telegram private account history", {
+        error,
+        channelId: input.channelId,
+        chatId: input.chatId,
+      });
+      if (input.throwOnError) {
+        throw error;
+      }
+      return 0;
+    }
+  }
+
+  private async resolvePrivateUser(
+    client: TelegramClient,
+    channelId: string,
+    userId: string,
+  ): Promise<ResolvedTelegramUser> {
+    const cacheKey = `${channelId}:${userId}`;
+    const cached = this.userEntityCache.get(cacheKey);
+    if (cached?.inputEntity) {
+      return cached;
+    }
+
+    try {
+      const dialogs = await client.getDialogs({ limit: 100 });
+      for (const dialog of dialogs) {
+        if (!(dialog.entity instanceof Api.User) || dialog.entity.id.toString() !== userId) {
+          continue;
+        }
+
+        const resolved = {
+          user: dialog.entity,
+          inputEntity: dialog.inputEntity,
+        };
+        this.userEntityCache.set(cacheKey, resolved);
+        return resolved;
+      }
+    } catch (error) {
+      console.error("Failed to resolve Telegram private user entity", {
+        error,
+        channelId,
+        userId,
+      });
+    }
+
+    const fallback = { user: null, inputEntity: null };
+    this.userEntityCache.set(cacheKey, fallback);
+    return fallback;
+  }
 }
 
 function ensureApiId(channel: ChannelConfig) {
-  if (!channel.apiId || Number.isNaN(channel.apiId)) {
-    throw new Error("请填写 Telegram API ID。");
-  }
-  return Number(channel.apiId);
+  return TELEGRAM_USER_API_ID;
 }
 
 function ensureApiHash(channel: ChannelConfig) {
-  const apiHash = channel.apiHash?.trim();
-  if (!apiHash) {
-    throw new Error("请填写 Telegram API Hash。");
-  }
-  return apiHash;
+  return TELEGRAM_USER_API_HASH;
 }
 
 function ensurePhoneNumber(channel: ChannelConfig) {
@@ -425,8 +594,6 @@ function sanitizeRuntimeChannel(channel: ChannelConfig) {
     id: channel.id,
     type: channel.type,
     name: channel.name,
-    apiId: channel.apiId,
-    apiHash: channel.apiHash,
     phoneNumber: channel.phoneNumber,
     sessionString: channel.sessionString,
     enabled: channel.enabled,
@@ -459,4 +626,121 @@ function formatTelegramUserName(user: Api.User | null) {
   }
 
   return [user.firstName, user.lastName].filter(Boolean).join(" ").trim() || user.username || "";
+}
+
+function formatTelegramMessageDate(date: number | undefined) {
+  return date ? new Date(date * 1000).toISOString() : undefined;
+}
+
+function toPeerUser(userId: string) {
+  return new Api.PeerUser({ userId: returnBigInt(userId) });
+}
+
+type TelegramAttachment = {
+  kind: "image" | "audio" | "video" | "file";
+  dataUrl: string;
+  mimeType: string;
+  fileName?: string;
+};
+
+async function downloadTelegramUserMedia(client: TelegramClient, message: Api.Message): Promise<TelegramAttachment | undefined> {
+  const isPhoto = message.media instanceof Api.MessageMediaPhoto;
+  const document =
+    message.media instanceof Api.MessageMediaDocument && message.media.document instanceof Api.Document
+      ? message.media.document
+      : null;
+
+  if (!isPhoto && !document) {
+    return undefined;
+  }
+
+  const media = await client.downloadMedia(message, {});
+  if (!media) {
+    return undefined;
+  }
+
+  const buffer = Buffer.isBuffer(media) ? media : Buffer.from(media);
+  const mimeType = document?.mimeType || "image/jpeg";
+  return {
+    kind: inferAttachmentKind(mimeType),
+    dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`,
+    mimeType,
+    fileName: document ? getTelegramDocumentFileName(document) : undefined,
+  };
+}
+
+function dataUrlToBuffer(dataUrl: string) {
+  const [, base64 = ""] = dataUrl.split(",", 2);
+  return Buffer.from(base64, "base64");
+}
+
+function mimeToExtension(mimeType: string | undefined) {
+  if (mimeType === "image/png") {
+    return "png";
+  }
+  if (mimeType === "image/webp") {
+    return "webp";
+  }
+  if (mimeType === "application/pdf") {
+    return "pdf";
+  }
+  if (mimeType === "text/plain") {
+    return "txt";
+  }
+  if (mimeType?.includes("wordprocessingml") || mimeType === "application/msword") {
+    return "docx";
+  }
+  if (mimeType?.includes("spreadsheetml") || mimeType === "application/vnd.ms-excel") {
+    return "xlsx";
+  }
+  if (mimeType?.startsWith("audio/")) {
+    return mimeType.includes("ogg") ? "ogg" : "mp3";
+  }
+  if (mimeType?.startsWith("video/")) {
+    return "mp4";
+  }
+  if (mimeType?.startsWith("image/")) {
+    return "jpg";
+  }
+  return "bin";
+}
+
+function inferAttachmentKind(mimeType: string | undefined): TelegramAttachment["kind"] {
+  if (mimeType?.startsWith("image/")) {
+    return "image";
+  }
+  if (mimeType?.startsWith("audio/")) {
+    return "audio";
+  }
+  if (mimeType?.startsWith("video/")) {
+    return "video";
+  }
+  return "file";
+}
+
+function getTelegramDocumentFileName(document: Api.Document) {
+  const fileNameAttribute = document.attributes.find(
+    (attribute): attribute is Api.DocumentAttributeFilename =>
+      attribute instanceof Api.DocumentAttributeFilename,
+  );
+  return fileNameAttribute?.fileName;
+}
+
+function getTelegramUserReplyToMessageId(message: Api.Message) {
+  const replyTo = message.replyTo;
+  if (replyTo instanceof Api.MessageReplyHeader) {
+    return replyTo.replyToMsgId ? String(replyTo.replyToMsgId) : undefined;
+  }
+  return undefined;
+}
+
+function describeTelegramUserMessage(message: Api.Message, attachment: TelegramAttachment | undefined) {
+  if (attachment?.kind === "image") return "[图片]";
+  if (attachment?.kind === "audio") return "[音频]";
+  if (attachment?.kind === "video") return "[视频]";
+  if (attachment?.kind === "file") return `[文件${attachment.fileName ? `：${attachment.fileName}` : ""}]`;
+  if (message.media instanceof Api.MessageMediaGeo || message.media instanceof Api.MessageMediaVenue) return "[位置]";
+  if (message.media instanceof Api.MessageMediaContact) return "[联系人]";
+  if (message.media instanceof Api.MessageMediaPoll) return "[投票]";
+  return "";
 }

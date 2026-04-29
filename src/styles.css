@@ -885,8 +885,7 @@ select {
   max-width: 280px;
 }
 
-.attachment-preview-card img,
-.bubble-image {
+.attachment-preview-card img {
   display: block;
   width: 100%;
   max-width: 320px;
@@ -1087,6 +1086,12 @@ select {
   flex-wrap: wrap;
 }
 
+.conversation-topbar .topbar-actions {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .session-title-row,
 .session-meta-row {
   justify-content: space-between;
@@ -1100,6 +1105,16 @@ select {
   color: var(--text-chat-primary);
   font-size: 15px;
   line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-topbar h2 {
+  overflow: hidden;
+  max-width: min(360px, 34vw);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-item p {
@@ -1184,6 +1199,22 @@ select {
 
 .message-canvas-positioning {
   visibility: hidden;
+}
+
+.message-item-frame {
+  display: grid;
+  gap: 10px;
+}
+
+.unread-message-anchor {
+  justify-self: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .chat-message-canvas {
@@ -1278,7 +1309,66 @@ select {
 }
 
 .bubble-image {
+  display: block;
+  width: min(320px, 68vw);
+  max-width: 100%;
+  min-width: 180px;
+  height: auto;
+  max-height: 420px;
   margin-bottom: 12px;
+  object-fit: contain;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.bubble-media-card,
+.bubble-file-card,
+.reply-reference {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.reply-reference {
+  color: var(--text-chat-secondary);
+  font-size: 12px;
+  line-height: 1.25;
+  border-left: 3px solid var(--accent);
+}
+
+.bubble-media-card audio {
+  width: min(320px, 68vw);
+  max-width: 100%;
+}
+
+.bubble-media-card video {
+  display: block;
+  width: min(360px, 70vw);
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: 10px;
+  background: #000;
+}
+
+.bubble-media-card span,
+.bubble-file-card span {
+  color: var(--text-bubble);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.bubble-file-card {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bubble-file-card small {
+  color: var(--text-chat-secondary);
 }
 
 .assistant-bubble.user {
@@ -1927,7 +2017,7 @@ select {
 .channel-row {
   min-height: 68px;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 120px minmax(150px, 220px) 96px 40px;
+  grid-template-columns: minmax(180px, 1fr) 120px minmax(150px, 220px) 86px 96px 40px;
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
@@ -1986,6 +2076,32 @@ select {
 
 .channel-row-status[data-status="checking"] span {
   color: var(--text-secondary);
+}
+
+.channel-enable-pill {
+  justify-self: end;
+  min-width: 76px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: var(--text-chat-secondary);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  font-size: 13px;
+  font-weight: 700;
+  transition: 160ms ease;
+}
+
+.channel-enable-pill.active {
+  color: #fff;
+  background: var(--accent-solid);
+  border-color: transparent;
+  box-shadow: var(--accent-shadow);
+}
+
+.channel-enable-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .channel-row .icon-text-button,
@@ -2050,6 +2166,56 @@ select {
   width: 40px;
   height: 40px;
   padding: 0;
+}
+
+.auto-reply-toggle-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  color: var(--text-chat-primary);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  font-weight: 700;
+  transition: 160ms ease;
+}
+
+.auto-reply-toggle-control.active {
+  color: #fff;
+  background: var(--accent-solid);
+  box-shadow: var(--accent-shadow);
+}
+
+.auto-reply-toggle-control .pill-switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  flex: none;
+  border-radius: 999px;
+  background: rgba(95, 82, 180, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(95, 82, 180, 0.18);
+}
+
+.auto-reply-toggle-control .pill-switch span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: transform 160ms ease;
+}
+
+.auto-reply-toggle-control.active .pill-switch {
+  background: rgba(255, 255, 255, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.auto-reply-toggle-control.active .pill-switch span {
+  transform: translateX(14px);
 }
 
 .assistant-send-button {

@@ -64,8 +64,38 @@ export class TelegramBotService {
     await Promise.all(Array.from(this.bots.keys()).map((channelId) => this.stopInstance(channelId)));
   }
 
-  async sendManualMessage(channelId: string | null | undefined, chatId: string, text: string) {
-    return this.resolveBot(channelId).sendMessage(chatId, text);
+  async sendManualMessage(
+    channelId: string | null | undefined,
+    chatId: string,
+    text: string,
+    options?: {
+      imageDataUrl?: string;
+      imageMimeType?: string;
+      attachmentDataUrl?: string;
+      attachmentMimeType?: string;
+      attachmentKind?: string;
+      attachmentFileName?: string;
+    },
+  ) {
+    const bot = this.resolveBot(channelId);
+    const attachmentDataUrl = options?.attachmentDataUrl ?? options?.imageDataUrl;
+    const attachmentMimeType = options?.attachmentMimeType ?? options?.imageMimeType;
+    const attachmentKind = options?.attachmentKind ?? inferAttachmentKind(attachmentMimeType, "file");
+    if (attachmentDataUrl) {
+      const buffer = dataUrlToBuffer(attachmentDataUrl);
+      const caption = text || undefined;
+      if (attachmentKind === "image") {
+        return bot.sendPhoto(chatId, buffer, { caption });
+      }
+      if (attachmentKind === "audio") {
+        return bot.sendAudio(chatId, buffer, { caption }, { filename: options?.attachmentFileName });
+      }
+      if (attachmentKind === "video") {
+        return bot.sendVideo(chatId, buffer, { caption }, { filename: options?.attachmentFileName });
+      }
+      return bot.sendDocument(chatId, buffer, { caption }, { filename: options?.attachmentFileName });
+    }
+    return bot.sendMessage(chatId, text);
   }
 
   async editMessage(channelId: string | null | undefined, chatId: string, messageId: string, text: string) {
@@ -220,8 +250,16 @@ export class TelegramBotService {
     isEdited = false,
   ) {
     try {
-      const inboundText = message.text ?? message.caption;
-      if (!inboundText || !message.from) {
+      const inboundText = message.text ?? message.caption ?? "";
+      if (!message.from) {
+        return;
+      }
+      const attachment = await downloadTelegramBotMedia(bot, message);
+      const replyToMessageId = message.reply_to_message?.message_id
+        ? String(message.reply_to_message.message_id)
+        : undefined;
+      const messageText = inboundText || describeTelegramBotMessage(message, attachment);
+      if (!messageText && !attachment?.dataUrl && !replyToMessageId) {
         return;
       }
 
@@ -238,14 +276,20 @@ export class TelegramBotService {
           conversationId: conversation.id,
           externalMessageId: String(message.message_id),
           senderId: String(message.from.id),
-          text: inboundText,
+          text: messageText,
+          replyToMessageId,
         });
       } else {
         await this.conversations.appendInboundTelegramMessage({
           conversationId: conversation.id,
           externalMessageId: String(message.message_id),
           senderId: String(message.from.id),
-          text: inboundText,
+          text: messageText,
+          attachmentDataUrl: attachment?.dataUrl,
+          attachmentKind: attachment?.kind,
+          attachmentMimeType: attachment?.mimeType,
+          attachmentFileName: attachment?.fileName,
+          replyToMessageId,
         });
       }
 
@@ -253,7 +297,7 @@ export class TelegramBotService {
         const reply = await this.ai.handlePotentialAutoReply({
           conversationId: conversation.id,
           senderId: String(message.from.id),
-          inboundText,
+          inboundText: messageText || `[${attachment?.kind ?? "消息"}]`,
         });
 
         if (reply) {
@@ -276,4 +320,128 @@ function formatTelegramBotError(error: unknown) {
     return `TelegramBot 连接异常：${error.message}`;
   }
   return "TelegramBot 连接异常。";
+}
+
+type TelegramAttachment = {
+  kind: "image" | "audio" | "video" | "file";
+  dataUrl: string;
+  mimeType: string;
+  fileName?: string;
+};
+
+async function downloadTelegramBotMedia(bot: TelegramBot, message: TelegramBot.Message): Promise<TelegramAttachment | undefined> {
+  const candidate = getTelegramBotMediaCandidate(message);
+  if (!candidate) {
+    return undefined;
+  }
+
+  const { fileId, kind, mimeType, fileName } = candidate;
+  if (!fileId) {
+    return undefined;
+  }
+
+  const link = await bot.getFileLink(fileId);
+  const response = await fetch(link);
+  if (!response.ok) {
+    throw new Error(`下载 Telegram 图片失败：${response.status}`);
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const resolvedMimeType = response.headers.get("content-type")?.split(";")[0] || mimeType;
+  return {
+    kind: inferAttachmentKind(resolvedMimeType, kind),
+    dataUrl: `data:${resolvedMimeType};base64,${buffer.toString("base64")}`,
+    mimeType: resolvedMimeType,
+    fileName,
+  };
+}
+
+function getTelegramBotMediaCandidate(message: TelegramBot.Message) {
+  const photo = message.photo?.at(-1);
+  if (photo) {
+    return { fileId: photo.file_id, kind: "image" as const, mimeType: "image/jpeg" };
+  }
+  if (message.voice) {
+    return { fileId: message.voice.file_id, kind: "audio" as const, mimeType: message.voice.mime_type ?? "audio/ogg" };
+  }
+  if (message.audio) {
+    return {
+      fileId: message.audio.file_id,
+      kind: "audio" as const,
+      mimeType: message.audio.mime_type ?? "audio/mpeg",
+      fileName: getTelegramBotFileName(message.audio),
+    };
+  }
+  if (message.video) {
+    return {
+      fileId: message.video.file_id,
+      kind: "video" as const,
+      mimeType: message.video.mime_type ?? "video/mp4",
+      fileName: getTelegramBotFileName(message.video),
+    };
+  }
+  if (message.video_note) {
+    return { fileId: message.video_note.file_id, kind: "video" as const, mimeType: "video/mp4" };
+  }
+  if (message.animation) {
+    return {
+      fileId: message.animation.file_id,
+      kind: "video" as const,
+      mimeType: message.animation.mime_type ?? "video/mp4",
+      fileName: getTelegramBotFileName(message.animation),
+    };
+  }
+  if (message.document) {
+    return {
+      fileId: message.document.file_id,
+      kind: inferAttachmentKind(message.document.mime_type, "file"),
+      mimeType: message.document.mime_type ?? "application/octet-stream",
+      fileName: message.document.file_name,
+    };
+  }
+  if (message.sticker) {
+    return {
+      fileId: message.sticker.file_id,
+      kind: "image" as const,
+      mimeType: message.sticker.is_video ? "video/webm" : "image/webp",
+      fileName: getTelegramBotFileName(message.sticker),
+    };
+  }
+  return undefined;
+}
+
+function getTelegramBotFileName(value: unknown) {
+  return typeof value === "object" && value !== null && "file_name" in value
+    ? String((value as { file_name?: string }).file_name ?? "")
+    : undefined;
+}
+
+function inferAttachmentKind(mimeType: string | undefined, fallback: "image" | "audio" | "video" | "file") {
+  if (mimeType?.startsWith("image/")) {
+    return "image" as const;
+  }
+  if (mimeType?.startsWith("audio/")) {
+    return "audio" as const;
+  }
+  if (mimeType?.startsWith("video/")) {
+    return "video" as const;
+  }
+  return fallback;
+}
+
+function describeTelegramBotMessage(message: TelegramBot.Message, attachment: TelegramAttachment | undefined) {
+  if (attachment?.kind === "image") return "[图片]";
+  if (attachment?.kind === "audio") return "[音频]";
+  if (attachment?.kind === "video") return "[视频]";
+  if (attachment?.kind === "file") return `[文件${attachment.fileName ? `：${attachment.fileName}` : ""}]`;
+  if (message.contact) return "[联系人]";
+  if (message.location || message.venue) return "[位置]";
+  if (message.poll) return `[投票：${message.poll.question}]`;
+  if (message.sticker) return "[贴纸]";
+  return "";
+}
+
+function dataUrlToBuffer(dataUrl: string) {
+  const [, base64 = ""] = dataUrl.split(",", 2);
+  return Buffer.from(base64, "base64");
 }

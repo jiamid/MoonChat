@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld("moonchat", {
       text,
       imageDataUrl: options?.imageDataUrl,
       imageMimeType: options?.imageMimeType,
+      attachmentDataUrl: options?.attachmentDataUrl,
+      attachmentMimeType: options?.attachmentMimeType,
+      attachmentKind: options?.attachmentKind,
+      attachmentFileName: options?.attachmentFileName,
     }),
   updateMessage: (messageId, nextText) =>
     ipcRenderer.invoke("conversation:update-message", { messageId, nextText }),
@@ -37,6 +41,8 @@ contextBridge.exposeInMainWorld("moonchat", {
   updateParticipantLabel: (conversationId, participantLabel) =>
     ipcRenderer.invoke("conversation:update-participant-label", { conversationId, participantLabel }),
   triggerLearning: (conversationId) => ipcRenderer.invoke("learning:trigger", conversationId),
+  syncTelegramUserRecentHistory: (conversationId) =>
+    ipcRenderer.invoke("telegram-user:sync-recent-history", conversationId),
   toggleAutoReply: (conversationId, enabled) =>
     ipcRenderer.invoke("conversation:toggle-auto-reply", { conversationId, enabled }),
   onConversationChanged: (listener) => {

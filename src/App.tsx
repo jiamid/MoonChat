@@ -23,6 +23,7 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import SyncIcon from "@mui/icons-material/Sync";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PsychologyIcon from "@mui/icons-material/Psychology";
 import logoSrc from "../logo.png";
@@ -49,6 +50,12 @@ type MessageSourceFilter =
 type AppView = "chat" | "channels" | "ai";
 type AiTab = "assistant" | "base" | "style" | "knowledge" | "rag" | "model";
 type ThemeMode = "light" | "dark";
+type AttachmentDraft = {
+  dataUrl: string;
+  mimeType: string;
+  kind: string;
+  fileName: string;
+};
 type ChannelConnectionStatus = {
   ok: boolean;
   connected: boolean;
@@ -59,6 +66,20 @@ type ChannelConnectionStatus = {
 
 const workspaceViewStorageKey = "moonchat:last-view";
 const aiTabStorageKey = "moonchat:last-ai-tab";
+const chatReadAtStoragePrefix = "moonchat:chat-read-at:";
+const chatAttachmentAccept = [
+  "image/*",
+  "audio/*",
+  "video/*",
+  "application/pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".csv",
+  ".txt",
+  "text/plain",
+].join(",");
 
 const defaultSettings: AppSettings = {
   ui: { themeMode: "dark" },
@@ -109,7 +130,7 @@ export function App() {
   const [messageRoleFilter, setMessageRoleFilter] = useState<MessageRoleFilter>("all");
   const [messageSourceFilter, setMessageSourceFilter] = useState<MessageSourceFilter>("all");
   const [draft, setDraft] = useState("");
-  const [aiImageDraft, setAiImageDraft] = useState<{ dataUrl: string; mimeType: string } | null>(null);
+  const [aiImageDraft, setAiImageDraft] = useState<AttachmentDraft | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState("");
   const [participantLabelDraft, setParticipantLabelDraft] = useState("");
@@ -118,6 +139,7 @@ export function App() {
   const [editingChannelDraft, setEditingChannelDraft] = useState<ChannelConfig | null>(null);
   const [isChatDetailDrawerOpen, setIsChatDetailDrawerOpen] = useState(false);
   const [learningConversationId, setLearningConversationId] = useState<string | null>(null);
+  const [syncingHistoryConversationId, setSyncingHistoryConversationId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [whatsappQrPendingId, setWhatsappQrPendingId] = useState<string | null>(null);
   const [whatsappQrError, setWhatsappQrError] = useState<string | null>(null);
@@ -126,9 +148,11 @@ export function App() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const aiImageInputRef = useRef<HTMLInputElement | null>(null);
+  const chatImageInputRef = useRef<HTMLInputElement | null>(null);
   const aiComposerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const aiMessageCanvasRef = useRef<HTMLDivElement | null>(null);
   const chatMessageCanvasRef = useRef<HTMLDivElement | null>(null);
+  const chatUnreadAnchorRef = useRef<HTMLDivElement | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const previousAiMessageCountRef = useRef(0);
@@ -157,9 +181,14 @@ export function App() {
     conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
   const localAiConversation =
     conversations.find((conversation) => conversation.channelType === "local_ai") ?? null;
+  const isAssistantView = view === "ai" && aiTab === "assistant";
   const activeConversation =
     view === "ai" && aiTab === "assistant" ? localAiConversation : selectedConversation;
   const hasAiHistory = view === "ai" && aiTab === "assistant" && messages.length > 0;
+  const selectedConversationSupportsImages =
+    isAssistantView ||
+    selectedConversation?.channelType === "telegram" ||
+    selectedConversation?.channelType === "telegram_user";
   const channelConversations = conversations.filter(
     (conversation) => conversation.channelType !== "local_ai",
   );
@@ -177,9 +206,10 @@ export function App() {
     conversation.channelId
       ? channelNameById.get(conversation.channelId) ?? describeChannel(conversation.channelType)
       : describeChannel(conversation.channelType);
+  const getConversationDisplayName = (conversation: ConversationSummary) =>
+    getConversationPreferredName(conversation);
   const firstChannelConversationId = channelConversations[0]?.id ?? null;
   const themeMode = settings.ui.themeMode;
-  const isAssistantView = view === "ai" && aiTab === "assistant";
 
   useEffect(() => {
     document.body.dataset.theme = themeMode;
@@ -233,6 +263,10 @@ export function App() {
     view === "chat" && selectedConversation?.learningStatus === "learned" && selectedConversation.learnedAt
       ? new Date(selectedConversation.learnedAt).getTime()
       : null;
+  const chatUnreadMessageId = useMemo(
+    () => findFirstUnreadInboundMessageId(selectedConversationId, filteredMessages),
+    [filteredMessages, selectedConversationId],
+  );
 
   async function refreshWorkspace() {
     const [snapshot, conversationList] = await Promise.all([
@@ -425,37 +459,73 @@ export function App() {
 
   useLayoutEffect(() => {
     const activeConversationId = isAssistantView ? activeConversation?.id ?? null : null;
+    const isConversationLoaded = loadedMessagesConversationId === activeConversationId;
+
+    if (!isAssistantView) {
+      setReadyAiConversationId(null);
+      previousAiConversationIdRef.current = null;
+      previousAiMessageCountRef.current = 0;
+      return;
+    }
+
+    if (!isConversationLoaded) {
+      return;
+    }
+
     const hasNewAssistantMessage =
-      isAssistantView &&
-      loadedMessagesConversationId === activeConversationId &&
-      (messages.length > previousAiMessageCountRef.current ||
-        activeConversationId !== previousAiConversationIdRef.current);
+      messages.length > previousAiMessageCountRef.current ||
+      activeConversationId !== previousAiConversationIdRef.current ||
+      readyAiConversationId !== activeConversationId;
 
     if (hasNewAssistantMessage) {
-      scrollCanvasToBottom(aiMessageCanvasRef.current);
-      setReadyAiConversationId(activeConversationId);
+      positionElementAfterRender(aiMessagesEndRef.current, () => {
+        setReadyAiConversationId(activeConversationId);
+      });
     }
 
     previousAiMessageCountRef.current = messages.length;
     previousAiConversationIdRef.current = activeConversationId;
-  }, [activeConversation?.id, isAssistantView, loadedMessagesConversationId, messages]);
+  }, [
+    activeConversation?.id,
+    isAssistantView,
+    loadedMessagesConversationId,
+    messages,
+    readyAiConversationId,
+  ]);
 
   useLayoutEffect(() => {
     const activeConversationId = view === "chat" ? selectedConversationId : null;
+    const isConversationLoaded = loadedMessagesConversationId === activeConversationId;
+
+    if (view !== "chat" || !isConversationLoaded) {
+      return;
+    }
+
     const hasNewChatMessage =
-      view === "chat" &&
-      loadedMessagesConversationId === activeConversationId &&
-      (messages.length > previousChatMessageCountRef.current ||
-        activeConversationId !== previousChatConversationIdRef.current);
+      messages.length > previousChatMessageCountRef.current ||
+      activeConversationId !== previousChatConversationIdRef.current ||
+      readyChatConversationId !== activeConversationId;
 
     if (hasNewChatMessage) {
-      scrollCanvasToBottom(chatMessageCanvasRef.current);
-      setReadyChatConversationId(activeConversationId);
+      const latestMessageCreatedAt = messages.at(-1)?.createdAt ?? null;
+      positionCanvasAfterRender(chatMessageCanvasRef.current, chatUnreadAnchorRef.current, () => {
+        setReadyChatConversationId(activeConversationId);
+        if (activeConversationId && latestMessageCreatedAt) {
+          writeConversationReadAt(activeConversationId, latestMessageCreatedAt);
+        }
+      });
     }
 
     previousChatMessageCountRef.current = messages.length;
     previousChatConversationIdRef.current = activeConversationId;
-  }, [loadedMessagesConversationId, messages, selectedConversationId, view]);
+  }, [
+    loadedMessagesConversationId,
+    chatUnreadMessageId,
+    messages,
+    readyChatConversationId,
+    selectedConversationId,
+    view,
+  ]);
 
   useEffect(() => {
     if (toastTimerRef.current) {
@@ -581,11 +651,15 @@ export function App() {
   async function handleSendMessage() {
     const targetConversationId = isAssistantView ? activeConversation?.id : selectedConversationId;
     const nextText = draft.trim();
-    const canSendImageOnly = isAssistantView && Boolean(aiImageDraft);
-    const optimisticImageDraft = aiImageDraft;
+    const canSendAttachmentOnly = Boolean(aiImageDraft);
+    const optimisticAttachmentDraft = aiImageDraft;
     const isAiAssistantSend = isAssistantView && Boolean(activeConversation);
 
-    if (!targetConversationId || (!nextText && !canSendImageOnly)) {
+    if (!targetConversationId || (!nextText && !canSendAttachmentOnly)) {
+      return;
+    }
+    if (isAssistantView && optimisticAttachmentDraft && optimisticAttachmentDraft.kind !== "image") {
+      setError("AI 助手目前只支持发送图片附件。");
       return;
     }
 
@@ -607,9 +681,13 @@ export function App() {
           sourceType: "local_ai",
           messageRole: "inbound",
           contentText: nextText,
-          contentType: optimisticImageDraft ? "text_image" : "text",
-          attachmentImageDataUrl: optimisticImageDraft?.dataUrl ?? null,
-          attachmentMimeType: optimisticImageDraft?.mimeType ?? null,
+          contentType: optimisticAttachmentDraft ? `text_${optimisticAttachmentDraft.kind}` : "text",
+          attachmentImageDataUrl:
+            optimisticAttachmentDraft?.kind === "image" ? optimisticAttachmentDraft.dataUrl : null,
+          attachmentDataUrl: optimisticAttachmentDraft?.dataUrl ?? null,
+          attachmentKind: optimisticAttachmentDraft?.kind ?? null,
+          attachmentMimeType: optimisticAttachmentDraft?.mimeType ?? null,
+          attachmentFileName: optimisticAttachmentDraft?.fileName ?? null,
           replyToMessageId: null,
           isDeleted: false,
           editedAt: null,
@@ -622,21 +700,25 @@ export function App() {
         aiImageInputRef.current.value = "";
       }
       window.requestAnimationFrame(() => {
-        scrollCanvasToBottom(aiMessageCanvasRef.current);
+        positionElementAfterRender(aiMessagesEndRef.current);
         aiComposerTextareaRef.current?.focus();
       });
     }
 
     try {
       await window.moonchat.sendManualMessage(targetConversationId, nextText, {
-        imageDataUrl: optimisticImageDraft?.dataUrl,
-        imageMimeType: optimisticImageDraft?.mimeType,
+        imageDataUrl: optimisticAttachmentDraft?.kind === "image" ? optimisticAttachmentDraft.dataUrl : undefined,
+        imageMimeType: optimisticAttachmentDraft?.kind === "image" ? optimisticAttachmentDraft.mimeType : undefined,
+        attachmentDataUrl: optimisticAttachmentDraft?.dataUrl,
+        attachmentMimeType: optimisticAttachmentDraft?.mimeType,
+        attachmentKind: optimisticAttachmentDraft?.kind,
+        attachmentFileName: optimisticAttachmentDraft?.fileName,
       });
       if (!isAiAssistantSend) {
         setDraft("");
         setAiImageDraft(null);
-        if (aiImageInputRef.current) {
-          aiImageInputRef.current.value = "";
+        if (chatImageInputRef.current) {
+          chatImageInputRef.current.value = "";
         }
       }
       await refreshWorkspace();
@@ -649,7 +731,7 @@ export function App() {
       if (optimisticMessageId) {
         setMessages((current) => current.filter((message) => message.id !== optimisticMessageId));
         setDraft(nextText);
-        setAiImageDraft(optimisticImageDraft);
+        setAiImageDraft(optimisticAttachmentDraft);
       }
       setError(sendError instanceof Error ? sendError.message : "发送消息失败。");
     } finally {
@@ -993,6 +1075,28 @@ export function App() {
     }
   }
 
+  async function handleSyncTelegramUserRecentHistory() {
+    if (!selectedConversation || selectedConversation.channelType !== "telegram_user") {
+      return;
+    }
+
+    setSyncingHistoryConversationId(selectedConversation.id);
+    setError(null);
+    setStatusMessage(null);
+
+    try {
+      const result = await window.moonchat.syncTelegramUserRecentHistory(selectedConversation.id);
+      await refreshWorkspace();
+      await refreshMessages(selectedConversation.id);
+      await refreshMemories(selectedConversation);
+      setStatusMessage(`已同步最近 ${result.syncedCount} 条 Telegram 历史消息。`);
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "同步 Telegram 历史消息失败。");
+    } finally {
+      setSyncingHistoryConversationId(null);
+    }
+  }
+
   async function handleClearAiChat() {
     if (!localAiConversation) {
       return;
@@ -1032,7 +1136,27 @@ export function App() {
     }
 
     const dataUrl = await readFileAsDataUrl(file);
-    setAiImageDraft({ dataUrl, mimeType: file.type });
+    setAiImageDraft({ dataUrl, mimeType: file.type, kind: "image", fileName: file.name });
+    setStatusMessage(null);
+    setError(null);
+  }
+
+  async function handlePickChatAttachment(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const mimeType = file.type || inferMimeTypeFromFileName(file.name);
+    const kind = inferAttachmentKind(mimeType);
+    if (!isSupportedChatAttachment(file.name, mimeType)) {
+      setError("目前只支持图片、音频、视频、PDF、Word、Excel 和 TXT 文件。");
+      event.target.value = "";
+      return;
+    }
+
+    const dataUrl = await readFileAsDataUrl(file);
+    setAiImageDraft({ dataUrl, mimeType, kind, fileName: file.name });
     setStatusMessage(null);
     setError(null);
   }
@@ -1094,6 +1218,18 @@ export function App() {
       channels: nextChannels,
     }));
     await persistChannelSettings(nextChannels, "渠道已删除。");
+  }
+
+  async function toggleChannelEnabled(channel: ChannelConfig) {
+    const nextEnabled = !channel.enabled;
+    const nextChannels = settingsDraft.channels.map((item) =>
+      item.id === channel.id ? { ...item, enabled: nextEnabled } : item,
+    );
+    setSettingsDraft((current) => ({
+      ...current,
+      channels: nextChannels,
+    }));
+    await persistChannelSettings(nextChannels, nextEnabled ? "渠道已启用。" : "渠道已暂停。");
   }
 
   async function requestTelegramUserCode(channel: ChannelConfig, applySession: (sessionString: string) => void) {
@@ -1216,7 +1352,16 @@ export function App() {
               </div>
             </div>
             <div className="settings-grid modal-grid">
-              <label className="settings-field settings-field-wide">
+              <label className="settings-field">
+                <span>渠道名称</span>
+                <input
+                  value={newChannelDraft.name}
+                  onChange={(event) =>
+                    setNewChannelDraft((current) => ({ ...current, name: event.target.value }))
+                  }
+                />
+              </label>
+              <label className="settings-field">
                 <span>渠道类型</span>
                 <select
                   value={newChannelDraft.type}
@@ -1260,30 +1405,6 @@ export function App() {
 	                  <option value="whatsapp_personal">WhatsApp 私人账号</option>
 	                </select>
 	              </label>
-              <label className="settings-field">
-                <span>渠道名称</span>
-                <input
-                  value={newChannelDraft.name}
-                  onChange={(event) =>
-                    setNewChannelDraft((current) => ({ ...current, name: event.target.value }))
-                  }
-                />
-              </label>
-              <label className="settings-field">
-                <span>状态</span>
-                <select
-                  value={newChannelDraft.enabled ? "enabled" : "disabled"}
-                  onChange={(event) =>
-                    setNewChannelDraft((current) => ({
-                      ...current,
-                      enabled: event.target.value === "enabled",
-                    }))
-                  }
-                >
-                  <option value="enabled">启用</option>
-                  <option value="disabled">停用</option>
-                </select>
-              </label>
               {newChannelDraft.type === "telegram" ? (
                 <label className="settings-field settings-field-wide">
                   <span>Bot Token</span>
@@ -1298,34 +1419,10 @@ export function App() {
               ) : newChannelDraft.type === "telegram_user" ? (
                 <>
                   <div className="settings-field settings-field-wide helper-card">
-                    <strong>如何申请 api_id / api_hash</strong>
-                    <p>1. 打开 my.telegram.org 并用你的 Telegram 私人账号手机号登录。</p>
-                    <p>2. 进入 API development tools，创建应用，填写任意应用名与短名称。</p>
-                    <p>3. 复制页面里的 api_id 和 api_hash 填到这里。验证码通常会发到 Telegram App。</p>
+                    <strong>Telegram 私人账号登录说明</strong>
+                    <p>首次登录：填写手机号并点击发送验证码；收到验证码后填入验证码再保存。</p>
+                    <p>登录成功后会保存 session，后续一般不需要再次输入验证码或 2FA 密码。</p>
                   </div>
-                  <label className="settings-field">
-                    <span>api_id</span>
-                    <input
-                      type="number"
-                      value={newChannelDraft.apiId ?? ""}
-                      onChange={(event) =>
-                        setNewChannelDraft((current) => ({
-                          ...current,
-                          apiId: event.target.value ? Number(event.target.value) : undefined,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>api_hash</span>
-                    <input
-                      type="password"
-                      value={newChannelDraft.apiHash ?? ""}
-                      onChange={(event) =>
-                        setNewChannelDraft((current) => ({ ...current, apiHash: event.target.value }))
-                      }
-                    />
-                  </label>
                   <label className="settings-field settings-field-wide">
                     <span>手机号</span>
                     <input
@@ -1366,7 +1463,7 @@ export function App() {
                           setNewChannelDraft((current) => ({ ...current, sessionString })),
                         )
                       }
-                      disabled={isBusy || !newChannelDraft.apiId || !newChannelDraft.apiHash || !newChannelDraft.phoneNumber}
+                      disabled={isBusy || !newChannelDraft.phoneNumber}
                     >
                       发送验证码
                     </button>
@@ -1453,14 +1550,6 @@ export function App() {
               </div>
             </div>
             <div className="settings-grid modal-grid">
-              <label className="settings-field settings-field-wide">
-                <span>渠道类型</span>
-                <select value={editingChannelDraft.type} disabled>
-                  <option value="telegram">TelegramBot</option>
-                  <option value="telegram_user">Telegram 私人账号</option>
-                  <option value="whatsapp_personal">WhatsApp 私人账号</option>
-                </select>
-              </label>
               <label className="settings-field">
                 <span>渠道名称</span>
                 <input
@@ -1473,19 +1562,11 @@ export function App() {
                 />
               </label>
               <label className="settings-field">
-                <span>状态</span>
-                <select
-                  value={editingChannelDraft.enabled ? "enabled" : "disabled"}
-                  onChange={(event) =>
-                    setEditingChannelDraft((current) =>
-                      current
-                        ? { ...current, enabled: event.target.value === "enabled" }
-                        : current,
-                    )
-                  }
-                >
-                  <option value="enabled">启用</option>
-                  <option value="disabled">停用</option>
+                <span>渠道类型</span>
+                <select value={editingChannelDraft.type} disabled>
+                  <option value="telegram">TelegramBot</option>
+                  <option value="telegram_user">Telegram 私人账号</option>
+                  <option value="whatsapp_personal">WhatsApp 私人账号</option>
                 </select>
               </label>
               {editingChannelDraft.type === "telegram" ? (
@@ -1505,36 +1586,9 @@ export function App() {
                 <>
                   <div className="settings-field settings-field-wide helper-card">
                     <strong>Telegram 私人账号登录说明</strong>
-                    <p>api_id 和 api_hash 来自 my.telegram.org 的 API development tools。</p>
-                    <p>首次登录：先填 api_id、api_hash、手机号并点击发送验证码；收到验证码后填入验证码再保存。</p>
+                    <p>首次登录：填写手机号并点击发送验证码；收到验证码后填入验证码再保存。</p>
                     <p>登录成功后会保存 session，后续一般不需要再次输入验证码或 2FA 密码。</p>
                   </div>
-                  <label className="settings-field">
-                    <span>api_id</span>
-                    <input
-                      type="number"
-                      value={editingChannelDraft.apiId ?? ""}
-                      onChange={(event) =>
-                        setEditingChannelDraft((current) =>
-                          current
-                            ? { ...current, apiId: event.target.value ? Number(event.target.value) : undefined }
-                            : current,
-                        )
-                      }
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>api_hash</span>
-                    <input
-                      type="password"
-                      value={editingChannelDraft.apiHash ?? ""}
-                      onChange={(event) =>
-                        setEditingChannelDraft((current) =>
-                          current ? { ...current, apiHash: event.target.value } : current,
-                        )
-                      }
-                    />
-                  </label>
                   <label className="settings-field settings-field-wide">
                     <span>手机号</span>
                     <input
@@ -1582,8 +1636,6 @@ export function App() {
                       }
                       disabled={
                         isBusy ||
-                        !editingChannelDraft.apiId ||
-                        !editingChannelDraft.apiHash ||
                         !editingChannelDraft.phoneNumber
                       }
                     >
@@ -1795,11 +1847,11 @@ export function App() {
                   >
                     <div className="session-card-top">
                       <div className="session-avatar" aria-hidden="true">
-                        {conversation.title.slice(0, 1).toUpperCase()}
+                        {getConversationDisplayName(conversation).slice(0, 1).toUpperCase()}
                       </div>
                       <div className="session-card-main">
                         <div className="session-title-row">
-                          <strong>{conversation.title}</strong>
+                          <strong>{getConversationDisplayName(conversation)}</strong>
                         </div>
                         <p>{conversation.externalUserId}</p>
                       </div>
@@ -1819,11 +1871,11 @@ export function App() {
               <div className="conversation-heading">
                 {selectedConversation ? (
                   <div className="conversation-avatar" aria-hidden="true">
-                    {selectedConversation.title.slice(0, 1).toUpperCase()}
+                    {getConversationDisplayName(selectedConversation).slice(0, 1).toUpperCase()}
                   </div>
                 ) : null}
                 <div>
-                <h2>{selectedConversation?.title ?? "选择一个会话"}</h2>
+                <h2>{selectedConversation ? getConversationDisplayName(selectedConversation) : "选择一个会话"}</h2>
                 <p>
                   {selectedConversation
                     ? `${getConversationChannelName(selectedConversation)} / ${
@@ -1838,8 +1890,8 @@ export function App() {
                   <button
                     className={
                       selectedConversation.autoReplyEnabled
-                        ? "toggle active icon-text-button"
-                        : "toggle icon-text-button"
+                        ? "auto-reply-toggle-control active"
+                        : "auto-reply-toggle-control"
                     }
                     onClick={async () => {
                       await window.moonchat.toggleAutoReply(
@@ -1848,9 +1900,13 @@ export function App() {
                       );
                       await refreshWorkspace();
                     }}
+                    aria-pressed={selectedConversation.autoReplyEnabled}
                   >
                     <SmartToyIcon fontSize="small" />
-                    {selectedConversation.autoReplyEnabled ? "关闭自动回复" : "开启自动回复"}
+                    <span>自动回复</span>
+                    <span className="pill-switch" aria-hidden="true">
+                      <span />
+                    </span>
                   </button>
                   <button
                     className="ghost-button icon-text-button"
@@ -1870,10 +1926,25 @@ export function App() {
                     ) : (
                       <>
                         <PsychologyIcon fontSize="small" />
-                        学习会话
+                        学习
                       </>
                     )}
                   </button>
+                  {selectedConversation.channelType === "telegram_user" ? (
+                    <button
+                      className="ghost-button icon-only-button"
+                      onClick={() => void handleSyncTelegramUserRecentHistory()}
+                      disabled={syncingHistoryConversationId === selectedConversation.id}
+                      aria-label="同步最近消息"
+                      title="同步最近消息"
+                    >
+                      {syncingHistoryConversationId === selectedConversation.id ? (
+                        <span className="inline-spinner" aria-hidden="true" />
+                      ) : (
+                        <SyncIcon fontSize="small" />
+                      )}
+                    </button>
+                  ) : null}
                   <button
                     className="ghost-button chat-detail-toggle"
                     onClick={() => setIsChatDetailDrawerOpen(true)}
@@ -1920,27 +1991,34 @@ export function App() {
                     {groupMessagesByDay(filteredMessages).map((group) => (
                       <div key={group.label} className="message-group">
                         <div className="message-group-label">{group.label}</div>
-                        {group.items.map((message) =>
-                          renderMessageBubble({
-                            message,
-                            editingDraft,
-                            editingMessageId,
-                            showLearnedBadge:
-                              learnedAtTimestamp !== null &&
-                              new Date(message.createdAt).getTime() <= learnedAtTimestamp,
-                            onCancelEdit: () => {
-                              setEditingMessageId(null);
-                              setEditingDraft("");
-                            },
-                            onChangeEdit: setEditingDraft,
-                            onDelete: handleDeleteMessage,
-                            onEdit: (id, text) => {
-                              setEditingMessageId(id);
-                              setEditingDraft(text);
-                            },
-                            onSaveEdit: handleSaveEdit,
-                          }),
-                        )}
+                        {group.items.map((message) => (
+                          <div key={message.id} className="message-item-frame">
+                            {message.id === chatUnreadMessageId ? (
+                              <div ref={chatUnreadAnchorRef} className="unread-message-anchor">
+                                新消息
+                              </div>
+                            ) : null}
+                            {renderMessageBubble({
+                              message,
+                              editingDraft,
+                              editingMessageId,
+                              showLearnedBadge:
+                                learnedAtTimestamp !== null &&
+                                new Date(message.createdAt).getTime() <= learnedAtTimestamp,
+                              onCancelEdit: () => {
+                                setEditingMessageId(null);
+                                setEditingDraft("");
+                              },
+                              onChangeEdit: setEditingDraft,
+                              onDelete: handleDeleteMessage,
+                              onEdit: (id, text) => {
+                                setEditingMessageId(id);
+                                setEditingDraft(text);
+                              },
+                              onSaveEdit: handleSaveEdit,
+                            })}
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </>
@@ -1949,6 +2027,32 @@ export function App() {
               </div>
 
               <footer className="composer chat-composer">
+                {aiImageDraft ? (
+                  <div className="attachment-preview-card">
+                    <MessageAttachmentPreview
+                      attachment={{
+                        kind: aiImageDraft.kind,
+                        dataUrl: aiImageDraft.dataUrl,
+                        mimeType: aiImageDraft.mimeType,
+                        fileName: aiImageDraft.fileName,
+                      }}
+                    />
+                    <div className="attachment-preview-meta">
+                      <strong>{aiImageDraft.fileName || "待发送附件"}</strong>
+                      <button
+                        className="text-button danger"
+                        onClick={() => {
+                          setAiImageDraft(null);
+                          if (chatImageInputRef.current) {
+                            chatImageInputRef.current.value = "";
+                          }
+                        }}
+                      >
+                        移除
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <textarea
                   rows={4}
                   value={draft}
@@ -1958,11 +2062,32 @@ export function App() {
                   disabled={!selectedConversation || isBusy}
                 />
                 <div className="composer-actions">
-                  <span>TelegramBot 会话会同时发回 TelegramBot，并写入本地记录。</span>
+                  <div className="assistant-composer-tools">
+                    <input
+                      ref={chatImageInputRef}
+                      className="hidden-file-input"
+                      type="file"
+                      accept={chatAttachmentAccept}
+                      onChange={(event) => void handlePickChatAttachment(event)}
+                    />
+                    <button
+                      className="ghost-button"
+                      onClick={() => chatImageInputRef.current?.click()}
+                      disabled={isBusy || !selectedConversation || !selectedConversationSupportsImages}
+                    >
+                      添加附件
+                    </button>
+                    <span>Telegram 会话支持图片、音视频和常见文档。</span>
+                  </div>
                   <button
                     className="primary-button icon-only-button assistant-send-button"
                     onClick={() => void handleSendMessage()}
-                    disabled={!selectedConversation || !draft.trim() || isBusy}
+                    disabled={
+                      !selectedConversation ||
+                      (!draft.trim() && !aiImageDraft) ||
+                      (Boolean(aiImageDraft) && !selectedConversationSupportsImages) ||
+                      isBusy
+                    }
                     aria-label="发送"
                     title="发送"
                   >
@@ -2144,9 +2269,16 @@ export function App() {
                 >
                   {aiImageDraft ? (
                     <div className="attachment-preview-card">
-                      <img src={aiImageDraft.dataUrl} alt="待发送图片" />
+                      <MessageAttachmentPreview
+                        attachment={{
+                          kind: aiImageDraft.kind,
+                          dataUrl: aiImageDraft.dataUrl,
+                          mimeType: aiImageDraft.mimeType,
+                          fileName: aiImageDraft.fileName,
+                        }}
+                      />
                       <div className="attachment-preview-meta">
-                        <strong>待发送图片</strong>
+                        <strong>{aiImageDraft.fileName || "待发送图片"}</strong>
                         <button
                           className="text-button danger"
                           onClick={() => {
@@ -2391,6 +2523,14 @@ export function App() {
                         <span>{rowStatus.label}</span>
                         {rowStatus.description ? <small>{rowStatus.description}</small> : null}
                       </div>
+                      <button
+                        className={channel.enabled ? "channel-enable-pill active" : "channel-enable-pill"}
+                        onClick={() => void toggleChannelEnabled(channel)}
+                        disabled={isBusy}
+                        aria-pressed={channel.enabled}
+                      >
+                        {channel.enabled ? "启用中" : "已暂停"}
+                      </button>
                       <button
                         className="ghost-button icon-text-button"
                         onClick={() => openEditChannelModal(channel)}
@@ -2680,15 +2820,15 @@ function ChatDetailContent({
           <>
             <div className="detail-hero">
               <div className="detail-avatar" aria-hidden="true">
-                {selectedConversation.title.slice(0, 1).toUpperCase()}
+                {getConversationPreferredName(selectedConversation).slice(0, 1).toUpperCase()}
               </div>
               <div>
-                <strong>{selectedConversation.title}</strong>
+                <strong>{getConversationPreferredName(selectedConversation)}</strong>
                 <p>{selectedConversation.participantLabel ?? "未命名联系人"}</p>
               </div>
             </div>
             <div className="detail-list">
-              <p><span>标题</span>{selectedConversation.title}</p>
+              <p><span>标题</span>{getConversationPreferredName(selectedConversation)}</p>
               <p><span>渠道</span>{channelName ?? describeChannel(selectedConversation.channelType)}</p>
               <p><span>用户</span>{selectedConversation.externalUserId}</p>
             </div>
@@ -2770,6 +2910,7 @@ function renderMessageBubble({
     isOutbound &&
     !message.isDeleted &&
     (message.senderType === "human_agent" || message.senderType === "ai_agent");
+  const attachment = getMessageAttachment(message);
 
   return (
     <div
@@ -2816,19 +2957,16 @@ function renderMessageBubble({
         </div>
       ) : (
         <>
-          {message.attachmentImageDataUrl ? (
-            <img
-              className="bubble-image"
-              src={message.attachmentImageDataUrl}
-              alt="消息图片"
-            />
+          {message.replyToMessageId ? (
+            <div className="reply-reference">回复 #{message.replyToMessageId}</div>
           ) : null}
+          {attachment ? <MessageAttachmentPreview attachment={attachment} /> : null}
           <p className={message.isDeleted ? "message-text deleted" : "message-text"}>
-            {message.contentText || (message.attachmentImageDataUrl ? " " : "")}
+            {message.contentText || (attachment ? " " : "")}
           </p>
           {canManageMessage ? (
             <div className="message-actions">
-              {!message.attachmentImageDataUrl ? (
+              {!attachment ? (
                 <button className="text-button" onClick={() => onEdit(message.id, message.contentText)}>
                   编辑
                 </button>
@@ -2851,6 +2989,116 @@ function EmptyState({ title, description }: { title: string; description: string
       <p>{description}</p>
     </div>
   );
+}
+
+type RenderAttachment = {
+  kind: string;
+  dataUrl: string;
+  mimeType: string | null;
+  fileName: string | null;
+};
+
+function MessageAttachmentPreview({ attachment }: { attachment: RenderAttachment }) {
+  if (attachment.kind === "image") {
+    return <img className="bubble-image" src={attachment.dataUrl} alt="消息图片" />;
+  }
+
+  if (attachment.kind === "audio") {
+    return (
+      <div className="bubble-media-card">
+        <span>{attachment.fileName || "音频消息"}</span>
+        <audio controls src={attachment.dataUrl} />
+      </div>
+    );
+  }
+
+  if (attachment.kind === "video") {
+    return (
+      <div className="bubble-media-card">
+        <video controls src={attachment.dataUrl} />
+        <span>{attachment.fileName || "视频消息"}</span>
+      </div>
+    );
+  }
+
+  return (
+    <a className="bubble-file-card" href={attachment.dataUrl} download={attachment.fileName || "telegram-file"}>
+      <span>{attachment.fileName || "文件消息"}</span>
+      <small>{attachment.mimeType || "application/octet-stream"}</small>
+    </a>
+  );
+}
+
+function getMessageAttachment(message: ConversationMessage): RenderAttachment | null {
+  const dataUrl = message.attachmentDataUrl || message.attachmentImageDataUrl;
+  if (!dataUrl) {
+    return null;
+  }
+
+  const mimeType = message.attachmentMimeType || getDataUrlMimeType(dataUrl);
+  return {
+    kind: message.attachmentKind || inferAttachmentKind(mimeType),
+    dataUrl,
+    mimeType,
+    fileName: message.attachmentFileName,
+  };
+}
+
+function inferAttachmentKind(mimeType: string | null): string {
+  if (mimeType?.startsWith("image/")) return "image";
+  if (mimeType?.startsWith("audio/")) return "audio";
+  if (mimeType?.startsWith("video/")) return "video";
+  return "file";
+}
+
+function inferMimeTypeFromFileName(fileName: string) {
+  const extension = fileName.split(".").pop()?.toLowerCase();
+  if (extension === "pdf") return "application/pdf";
+  if (extension === "doc") return "application/msword";
+  if (extension === "docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (extension === "xls") return "application/vnd.ms-excel";
+  if (extension === "xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (extension === "csv") return "text/csv";
+  if (extension === "txt") return "text/plain";
+  return "application/octet-stream";
+}
+
+function isSupportedChatAttachment(fileName: string, mimeType: string) {
+  if (
+    mimeType.startsWith("image/") ||
+    mimeType.startsWith("audio/") ||
+    mimeType.startsWith("video/") ||
+    mimeType === "application/pdf" ||
+    mimeType === "text/plain" ||
+    mimeType === "text/csv" ||
+    mimeType === "application/msword" ||
+    mimeType === "application/vnd.ms-excel" ||
+    mimeType.includes("wordprocessingml") ||
+    mimeType.includes("spreadsheetml")
+  ) {
+    return true;
+  }
+
+  const extension = fileName.split(".").pop()?.toLowerCase();
+  return ["pdf", "doc", "docx", "xls", "xlsx", "csv", "txt"].includes(extension ?? "");
+}
+
+function getDataUrlMimeType(dataUrl: string) {
+  return dataUrl.match(/^data:([^;]+);base64,/)?.[1] ?? null;
+}
+
+function getConversationPreferredName(conversation: ConversationSummary) {
+  const label = conversation.participantLabel?.trim();
+  if (label && label !== conversation.externalUserId) {
+    return label;
+  }
+
+  const title = conversation.title.trim();
+  if (title && title !== conversation.externalUserId && !/^Telegram User\s+\d+$/i.test(title)) {
+    return title;
+  }
+
+  return label || title || conversation.externalUserId;
 }
 
 function labelSender(senderType: string) {
@@ -2964,7 +3212,8 @@ function normalizeChannels(channels: ChannelConfig[]) {
           ? `WhatsApp 私人账号 ${index + 1}`
         : `TelegramBot ${index + 1}`),
     botToken: channel.botToken?.trim() ?? "",
-    apiHash: channel.apiHash?.trim() ?? "",
+    apiId: channel.type === "telegram_user" ? undefined : channel.apiId,
+    apiHash: channel.type === "telegram_user" ? "" : channel.apiHash?.trim() ?? "",
     phoneNumber: channel.phoneNumber?.trim() ?? "",
     loginCode: channel.loginCode?.trim() ?? "",
     twoFactorPassword: channel.twoFactorPassword?.trim() ?? "",
@@ -3051,11 +3300,56 @@ function readStoredAiTab(): AiTab {
     : "assistant";
 }
 
-function scrollCanvasToBottom(canvas: HTMLDivElement | null) {
+function positionCanvasAfterRender(
+  canvas: HTMLDivElement | null,
+  anchor: HTMLDivElement | null = null,
+  onPositioned?: () => void,
+) {
   if (!canvas) {
     return;
   }
-  canvas.scrollTop = canvas.scrollHeight;
+
+  window.requestAnimationFrame(() => {
+    if (anchor) {
+      canvas.scrollTop = Math.max(0, anchor.offsetTop - 12);
+    } else {
+      canvas.scrollTop = canvas.scrollHeight;
+    }
+    onPositioned?.();
+  });
+}
+
+function positionElementAfterRender(element: HTMLElement | null, onPositioned?: () => void) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      element?.scrollIntoView({ block: "end" });
+      onPositioned?.();
+    });
+  });
+}
+
+function findFirstUnreadInboundMessageId(
+  conversationId: string | null,
+  visibleMessages: ConversationMessage[],
+) {
+  if (!conversationId) {
+    return null;
+  }
+
+  const readAt = window.localStorage.getItem(`${chatReadAtStoragePrefix}${conversationId}`);
+  const readAtTime = readAt ? new Date(readAt).getTime() : 0;
+  const firstUnread = visibleMessages.find(
+    (message) =>
+      message.messageRole === "inbound" &&
+      !message.isDeleted &&
+      new Date(message.createdAt).getTime() > readAtTime,
+  );
+
+  return firstUnread?.id ?? null;
+}
+
+function writeConversationReadAt(conversationId: string, createdAt: string) {
+  window.localStorage.setItem(`${chatReadAtStoragePrefix}${conversationId}`, createdAt);
 }
 
 function readFileAsDataUrl(file: File) {

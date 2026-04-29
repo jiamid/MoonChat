@@ -84,6 +84,10 @@ export function registerAppIpc(runtime: AppRuntime) {
         text: string;
         imageDataUrl?: string;
         imageMimeType?: string;
+        attachmentDataUrl?: string;
+        attachmentMimeType?: string;
+        attachmentKind?: string;
+        attachmentFileName?: string;
       },
     ) => {
       const conversation = await runtime.conversations.getConversation(payload.conversationId);
@@ -91,15 +95,30 @@ export function registerAppIpc(runtime: AppRuntime) {
         throw new Error("Conversation not found.");
       }
 
-      if (payload.imageDataUrl && conversation.channelType !== "local_ai") {
-        throw new Error("当前只有 AI 助手支持图片发送。");
+      if (
+        (payload.attachmentDataUrl || payload.imageDataUrl) &&
+        conversation.channelType !== "local_ai" &&
+        conversation.channelType !== "telegram" &&
+        conversation.channelType !== "telegram_user"
+      ) {
+        throw new Error("当前只有 AI 助手、TelegramBot 和 Telegram 私人账号支持附件发送。");
       }
+      const attachmentDataUrl = payload.attachmentDataUrl ?? payload.imageDataUrl;
+      const attachmentMimeType = payload.attachmentMimeType ?? payload.imageMimeType;
+      const attachmentKind = payload.attachmentKind ?? (attachmentMimeType?.startsWith("image/") ? "image" : undefined);
+      const attachmentImageDataUrl = attachmentKind === "image" ? attachmentDataUrl : undefined;
 
       if (conversation.channelType === "telegram" && conversation.externalChatId) {
         const sent = await runtime.telegram.sendManualMessage(
           conversation.channelId,
           conversation.externalChatId,
           payload.text,
+          {
+            attachmentDataUrl,
+            attachmentMimeType,
+            attachmentKind,
+            attachmentFileName: payload.attachmentFileName,
+          },
         );
 
         await runtime.conversations.createHumanReply({
@@ -108,6 +127,11 @@ export function registerAppIpc(runtime: AppRuntime) {
           text: payload.text,
           sourceType: "telegram",
           externalMessageId: String(sent.message_id),
+          attachmentImageDataUrl,
+          attachmentDataUrl,
+          attachmentKind,
+          attachmentMimeType,
+          attachmentFileName: payload.attachmentFileName,
         });
 
         return { ok: true, externalMessageId: String(sent.message_id) };
@@ -118,6 +142,12 @@ export function registerAppIpc(runtime: AppRuntime) {
           conversation.channelId,
           conversation.externalChatId,
           payload.text,
+          {
+            attachmentDataUrl,
+            attachmentMimeType,
+            attachmentKind,
+            attachmentFileName: payload.attachmentFileName,
+          },
         );
 
         await runtime.conversations.createHumanReply({
@@ -126,6 +156,11 @@ export function registerAppIpc(runtime: AppRuntime) {
           text: payload.text,
           sourceType: "telegram_user",
           externalMessageId: String(sent.id),
+          attachmentImageDataUrl,
+          attachmentDataUrl,
+          attachmentKind,
+          attachmentMimeType,
+          attachmentFileName: payload.attachmentFileName,
         });
 
         return { ok: true, externalMessageId: String(sent.id) };
@@ -154,14 +189,17 @@ export function registerAppIpc(runtime: AppRuntime) {
           conversationId: payload.conversationId,
           senderId: "local-human",
           text: payload.text,
-          attachmentImageDataUrl: payload.imageDataUrl,
-          attachmentMimeType: payload.imageMimeType,
+          attachmentImageDataUrl,
+          attachmentDataUrl,
+          attachmentKind,
+          attachmentMimeType,
+          attachmentFileName: payload.attachmentFileName,
         });
         await runtime.ai.handleLocalAiChat({
           conversationId: payload.conversationId,
           inboundText: payload.text,
-          imageDataUrl: payload.imageDataUrl,
-          imageMimeType: payload.imageMimeType,
+          imageDataUrl: attachmentKind === "image" ? attachmentDataUrl : undefined,
+          imageMimeType: attachmentKind === "image" ? attachmentMimeType : undefined,
         });
         return { ok: true };
       }
@@ -237,6 +275,22 @@ export function registerAppIpc(runtime: AppRuntime) {
   );
   ipcMain.handle("learning:trigger", async (_event, conversationId: string) => {
     return runtime.learning.triggerConversationLearning(conversationId);
+  });
+  ipcMain.handle("telegram-user:sync-recent-history", async (_event, conversationId: string) => {
+    const conversation = await runtime.conversations.getConversation(conversationId);
+    if (!conversation) {
+      throw new Error("Conversation not found.");
+    }
+    if (conversation.channelType !== "telegram_user" || !conversation.externalChatId) {
+      throw new Error("这个会话不是 Telegram 私人账号会话。");
+    }
+
+    return runtime.telegramUser.syncRecentHistory({
+      channelId: conversation.channelId,
+      chatId: conversation.externalChatId,
+      conversationId: conversation.id,
+      fallbackSenderId: conversation.externalUserId,
+    });
   });
   ipcMain.handle(
     "conversation:toggle-auto-reply",

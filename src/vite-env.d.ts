@@ -75,7 +75,14 @@ interface Window {
     sendManualMessage: (
       conversationId: string,
       text: string,
-      options?: { imageDataUrl?: string; imageMimeType?: string },
+      options?: {
+        imageDataUrl?: string;
+        imageMimeType?: string;
+        attachmentDataUrl?: string;
+        attachmentMimeType?: string;
+        attachmentKind?: string;
+        attachmentFileName?: string;
+      },
     ) => Promise<{ ok: boolean; externalMessageId?: string }>;
     updateMessage: (messageId: string, nextText: string) => Promise<{ ok: boolean }>;
     deleteMessage: (messageId: string) => Promise<{ ok: boolean }>;
@@ -87,6 +94,9 @@ interface Window {
     triggerLearning: (
       conversationId: string,
     ) => Promise<{ status: "started" | "running" | "already_learned" }>;
+    syncTelegramUserRecentHistory: (
+      conversationId: string,
+    ) => Promise<{ ok: boolean; syncedCount: number }>;
     toggleAutoReply: (conversationId: string, enabled: boolean) => Promise<{ ok: boolean }>;
     onConversationChanged: (
       listener: (payload: { conversationId: string | null }) => void,

@@ -23,7 +23,10 @@ export interface ConversationMessage {
   contentText: string;
   contentType: string;
   attachmentImageDataUrl: string | null;
+  attachmentDataUrl: string | null;
+  attachmentKind: string | null;
   attachmentMimeType: string | null;
+  attachmentFileName: string | null;
   replyToMessageId: string | null;
   isDeleted: boolean;
   editedAt: string | null;

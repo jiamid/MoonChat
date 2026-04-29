@@ -24,7 +24,10 @@ export class DatabaseService {
     this.sqlite.exec(schema.bootstrapSql);
     this.ensureColumn("conversations", "channel_id", "TEXT");
     this.ensureColumn("messages", "attachment_image_data_url", "TEXT");
+    this.ensureColumn("messages", "attachment_data_url", "TEXT");
+    this.ensureColumn("messages", "attachment_kind", "TEXT");
     this.ensureColumn("messages", "attachment_mime_type", "TEXT");
+    this.ensureColumn("messages", "attachment_file_name", "TEXT");
     this.ensureColumn("knowledge_documents", "embedding_model", "TEXT");
     this.ensureColumn("knowledge_documents", "last_error", "TEXT");
     this.ensureColumn("knowledge_chunks", "embedding_model", "TEXT");

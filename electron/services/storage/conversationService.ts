@@ -127,7 +127,10 @@ export class ConversationService {
         contentText: messages.contentText,
         contentType: messages.contentType,
         attachmentImageDataUrl: messages.attachmentImageDataUrl,
+        attachmentDataUrl: messages.attachmentDataUrl,
+        attachmentKind: messages.attachmentKind,
         attachmentMimeType: messages.attachmentMimeType,
+        attachmentFileName: messages.attachmentFileName,
         replyToMessageId: messages.replyToMessageId,
         isDeleted: messages.isDeleted,
         editedAt: messages.editedAt,
@@ -171,7 +174,14 @@ export class ConversationService {
     senderId: string;
     text: string;
     sourceType?: string;
+    attachmentImageDataUrl?: string;
+    attachmentDataUrl?: string;
+    attachmentKind?: string;
+    attachmentMimeType?: string;
+    attachmentFileName?: string;
+    replyToMessageId?: string;
   }) {
+    const attachment = normalizeAttachment(input);
     await this.database.db.insert(messages).values({
       conversationId: input.conversationId,
       externalMessageId: input.externalMessageId,
@@ -179,8 +189,86 @@ export class ConversationService {
       senderId: input.senderId,
       sourceType: input.sourceType ?? "telegram",
       contentText: input.text,
-      contentType: "text",
+      contentType: attachment.contentType,
+      attachmentImageDataUrl: attachment.imageDataUrl,
+      attachmentDataUrl: attachment.dataUrl,
+      attachmentKind: attachment.kind,
+      attachmentMimeType: attachment.mimeType,
+      attachmentFileName: attachment.fileName,
+      replyToMessageId: input.replyToMessageId,
       messageRole: "inbound",
+    });
+
+    await this.touchConversation(input.conversationId);
+  }
+
+  async upsertTelegramUserMessage(input: {
+    conversationId: string;
+    externalMessageId: string;
+    senderId: string;
+    text: string;
+    messageRole: "inbound" | "outbound";
+    senderType: "user" | "human_agent";
+    createdAt?: string;
+    attachmentImageDataUrl?: string;
+    attachmentDataUrl?: string;
+    attachmentKind?: string;
+    attachmentMimeType?: string;
+    attachmentFileName?: string;
+    replyToMessageId?: string;
+  }) {
+    const existing = await this.database.db.query.messages.findFirst({
+      where: and(
+        eq(messages.conversationId, input.conversationId),
+        eq(messages.externalMessageId, input.externalMessageId),
+      ),
+    });
+    const now = new Date().toISOString();
+    const attachment = normalizeAttachment(input);
+
+    if (existing) {
+      if (
+        !existing.isDeleted &&
+        (existing.contentText !== input.text ||
+          existing.attachmentDataUrl !== (attachment.dataUrl ?? null) ||
+          existing.attachmentImageDataUrl !== (attachment.imageDataUrl ?? null) ||
+          existing.replyToMessageId !== (input.replyToMessageId ?? null))
+      ) {
+        await this.database.db
+          .update(messages)
+          .set({
+            contentText: input.text,
+            contentType: attachment.contentType,
+            attachmentImageDataUrl: attachment.imageDataUrl,
+            attachmentDataUrl: attachment.dataUrl,
+            attachmentKind: attachment.kind,
+            attachmentMimeType: attachment.mimeType,
+            attachmentFileName: attachment.fileName,
+            replyToMessageId: input.replyToMessageId,
+            editedAt: now,
+          })
+          .where(eq(messages.id, existing.id));
+      }
+      await this.touchConversation(input.conversationId);
+      return;
+    }
+
+    await this.database.db.insert(messages).values({
+      conversationId: input.conversationId,
+      externalMessageId: input.externalMessageId,
+      senderType: input.senderType,
+      senderId: input.senderId,
+      sourceType: "telegram_user",
+      contentText: input.text,
+      contentType: attachment.contentType,
+      attachmentImageDataUrl: attachment.imageDataUrl,
+      attachmentDataUrl: attachment.dataUrl,
+      attachmentKind: attachment.kind,
+      attachmentMimeType: attachment.mimeType,
+      attachmentFileName: attachment.fileName,
+      replyToMessageId: input.replyToMessageId,
+      messageRole: input.messageRole,
+      createdAt: input.createdAt,
     });
 
     await this.touchConversation(input.conversationId);
@@ -191,6 +279,7 @@ export class ConversationService {
     externalMessageId: string;
     senderId: string;
     text: string;
+    replyToMessageId?: string;
   }) {
     const existing = await this.database.db.query.messages.findFirst({
       where: and(
@@ -218,6 +307,7 @@ export class ConversationService {
       .update(messages)
       .set({
         contentText: input.text,
+        replyToMessageId: input.replyToMessageId,
         editedAt: new Date().toISOString(),
       })
       .where(eq(messages.id, existing.id));
@@ -230,8 +320,12 @@ export class ConversationService {
     senderId: string;
     text: string;
     attachmentImageDataUrl?: string;
+    attachmentDataUrl?: string;
+    attachmentKind?: string;
     attachmentMimeType?: string;
+    attachmentFileName?: string;
   }) {
+    const attachment = normalizeAttachment(input);
     const [message] = await this.database.db
       .insert(messages)
       .values({
@@ -240,9 +334,12 @@ export class ConversationService {
         senderType: "user",
         sourceType: "local_ai",
         contentText: input.text,
-        contentType: input.attachmentImageDataUrl ? "text_image" : "text",
-        attachmentImageDataUrl: input.attachmentImageDataUrl,
-        attachmentMimeType: input.attachmentMimeType,
+        contentType: attachment.contentType,
+        attachmentImageDataUrl: attachment.imageDataUrl,
+        attachmentDataUrl: attachment.dataUrl,
+        attachmentKind: attachment.kind,
+        attachmentMimeType: attachment.mimeType,
+        attachmentFileName: attachment.fileName,
         messageRole: "inbound",
       })
       .returning();
@@ -258,8 +355,12 @@ export class ConversationService {
     sourceType?: string;
     externalMessageId?: string;
     attachmentImageDataUrl?: string;
+    attachmentDataUrl?: string;
+    attachmentKind?: string;
     attachmentMimeType?: string;
+    attachmentFileName?: string;
   }) {
+    const attachment = normalizeAttachment(input);
     const [message] = await this.database.db
       .insert(messages)
       .values({
@@ -269,9 +370,12 @@ export class ConversationService {
         senderType: "human_agent",
         sourceType: input.sourceType ?? "moonchat_human",
         contentText: input.text,
-        contentType: input.attachmentImageDataUrl ? "text_image" : "text",
-        attachmentImageDataUrl: input.attachmentImageDataUrl,
-        attachmentMimeType: input.attachmentMimeType,
+        contentType: attachment.contentType,
+        attachmentImageDataUrl: attachment.imageDataUrl,
+        attachmentDataUrl: attachment.dataUrl,
+        attachmentKind: attachment.kind,
+        attachmentMimeType: attachment.mimeType,
+        attachmentFileName: attachment.fileName,
         messageRole: "outbound",
       })
       .returning();
@@ -352,8 +456,12 @@ export class ConversationService {
     text: string;
     externalMessageId?: string;
     attachmentImageDataUrl?: string;
+    attachmentDataUrl?: string;
+    attachmentKind?: string;
     attachmentMimeType?: string;
+    attachmentFileName?: string;
   }) {
+    const attachment = normalizeAttachment(input);
     const [message] = await this.database.db
       .insert(messages)
       .values({
@@ -363,9 +471,12 @@ export class ConversationService {
         senderType: "ai_agent",
         sourceType: "moonchat_ai",
         contentText: input.text,
-        contentType: input.attachmentImageDataUrl ? "text_image" : "text",
-        attachmentImageDataUrl: input.attachmentImageDataUrl,
-        attachmentMimeType: input.attachmentMimeType,
+        contentType: attachment.contentType,
+        attachmentImageDataUrl: attachment.imageDataUrl,
+        attachmentDataUrl: attachment.dataUrl,
+        attachmentKind: attachment.kind,
+        attachmentMimeType: attachment.mimeType,
+        attachmentFileName: attachment.fileName,
         messageRole: "outbound",
       })
       .returning();
@@ -575,4 +686,48 @@ export class ConversationService {
       listener({ conversationId });
     }
   }
+}
+
+type AttachmentInput = {
+  attachmentImageDataUrl?: string;
+  attachmentDataUrl?: string;
+  attachmentKind?: string;
+  attachmentMimeType?: string;
+  attachmentFileName?: string;
+};
+
+function normalizeAttachment(input: AttachmentInput) {
+  const dataUrl = input.attachmentDataUrl ?? input.attachmentImageDataUrl;
+  const mimeType = input.attachmentMimeType ?? getDataUrlMimeType(dataUrl);
+  const kind = input.attachmentKind ?? inferAttachmentKind(mimeType, input.attachmentImageDataUrl);
+  const imageDataUrl = kind === "image" ? dataUrl : input.attachmentImageDataUrl;
+
+  return {
+    dataUrl,
+    imageDataUrl,
+    kind,
+    mimeType,
+    fileName: input.attachmentFileName,
+    contentType: dataUrl ? `text_${kind ?? "file"}` : "text",
+  };
+}
+
+function inferAttachmentKind(mimeType: string | undefined, imageDataUrl?: string) {
+  if (imageDataUrl || mimeType?.startsWith("image/")) {
+    return "image";
+  }
+  if (mimeType?.startsWith("audio/")) {
+    return "audio";
+  }
+  if (mimeType?.startsWith("video/")) {
+    return "video";
+  }
+  if (mimeType) {
+    return "file";
+  }
+  return undefined;
+}
+
+function getDataUrlMimeType(dataUrl: string | undefined) {
+  return dataUrl?.match(/^data:([^;]+);base64,/)?.[1];
 }

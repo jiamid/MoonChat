@@ -96,13 +96,24 @@ const api = {
   sendManualMessage: (
     conversationId: string,
     text: string,
-    options?: { imageDataUrl?: string; imageMimeType?: string },
+    options?: {
+      imageDataUrl?: string;
+      imageMimeType?: string;
+      attachmentDataUrl?: string;
+      attachmentMimeType?: string;
+      attachmentKind?: string;
+      attachmentFileName?: string;
+    },
   ): Promise<{ ok: boolean; externalMessageId?: string }> =>
     ipcRenderer.invoke("conversation:send-manual-message", {
       conversationId,
       text,
       imageDataUrl: options?.imageDataUrl,
       imageMimeType: options?.imageMimeType,
+      attachmentDataUrl: options?.attachmentDataUrl,
+      attachmentMimeType: options?.attachmentMimeType,
+      attachmentKind: options?.attachmentKind,
+      attachmentFileName: options?.attachmentFileName,
     }),
   updateMessage: (messageId: string, nextText: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("conversation:update-message", { messageId, nextText }),
@@ -122,6 +133,10 @@ const api = {
     conversationId: string,
   ): Promise<{ status: "started" | "running" | "already_learned" }> =>
     ipcRenderer.invoke("learning:trigger", conversationId),
+  syncTelegramUserRecentHistory: (
+    conversationId: string,
+  ): Promise<{ ok: boolean; syncedCount: number }> =>
+    ipcRenderer.invoke("telegram-user:sync-recent-history", conversationId),
   toggleAutoReply: (
     conversationId: string,
     enabled: boolean,
