@@ -1182,7 +1182,7 @@ select {
 }
 
 .chat-toolbar-card {
-  padding: 14px 16px 12px;
+  padding: 12px 14px 0;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -1218,7 +1218,7 @@ select {
 }
 
 .chat-message-canvas {
-  padding: 14px 14px 8px;
+  padding: 0 24px;
   border-radius: 0;
   background: transparent;
   border: 0;
@@ -1412,7 +1412,7 @@ select {
 }
 
 .chat-composer {
-  padding: 12px 14px 12px;
+  padding: 0 14px 12px;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -1420,6 +1420,11 @@ select {
 
 .chat-composer textarea {
   min-height: 88px;
+  border-width: 1px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--surface-chat-input);
+  resize: none;
 }
 
 .chat-composer textarea,
@@ -1431,10 +1436,21 @@ select {
   border-color: var(--border-input);
 }
 
+.chat-toolbar-card .search-input {
+  border-width: 1px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--surface-chat-input);
+}
+
 .composer-actions {
   justify-content: space-between;
   color: var(--text-chat-secondary);
   font-size: 13px;
+}
+
+.chat-composer .composer-actions {
+  padding: 0 2px;
 }
 
 .button-inline-status {

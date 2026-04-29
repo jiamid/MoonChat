@@ -48,6 +48,11 @@ export class TelegramBotService {
 
       await this.stopInstance(channel.id);
       try {
+        this.setStatus(channel.id, {
+          connected: false,
+          needsLogin: false,
+          message: "TelegramBot 正在后台启动。",
+        });
         await this.startInstance(channel);
       } catch (error) {
         this.setStatus(channel.id, {
@@ -121,22 +126,22 @@ export class TelegramBotService {
       });
     }
 
-    const instance = this.bots.get(channel.id);
-    if (instance) {
-      try {
-        await instance.bot.getMe();
-        return this.setStatus(channel.id, {
-          connected: true,
-          needsLogin: false,
-          message: "TelegramBot 已连接。",
-        });
-      } catch (error) {
-        await this.stopInstance(channel.id);
-        return this.restartAndReport(channel, formatTelegramBotError(error));
-      }
+    if (this.bots.has(channel.id)) {
+      return this.setStatus(channel.id, {
+        connected: true,
+        needsLogin: false,
+        message: "TelegramBot 已连接。",
+      });
     }
 
-    return this.restartAndReport(channel, "TelegramBot 未运行，已尝试重启。");
+    return (
+      this.statuses.get(channel.id) ??
+      this.setStatus(channel.id, {
+        connected: false,
+        needsLogin: false,
+        message: "TelegramBot 正在后台启动。",
+      })
+    );
   }
 
   private async startInstance(channel: ChannelConfig) {

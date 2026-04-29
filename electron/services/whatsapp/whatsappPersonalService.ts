@@ -146,12 +146,12 @@ export class WhatsappPersonalService {
     const authStatePath = channel.authStatePath ?? this.getDefaultAuthStatePath(channel.id);
     const { state, saveCreds } = await useMultiFileAuthState(authStatePath);
     let currentQrDataUrl = this.clients.get(channel.id)?.qrDataUrl ?? channel.lastQrDataUrl ?? "";
-    const version = await this.resolveBaileysVersion();
     this.setStatus(channel.id, {
       connected: false,
       needsLogin: true,
       message: "正在连接 WhatsApp Web。",
     });
+    const version = await this.resolveBaileysVersion();
 
     const socket = makeWASocket({
       auth: {

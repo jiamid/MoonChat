@@ -74,6 +74,11 @@ export class TelegramUserService {
 
       await this.stopInstance(channel.id);
       try {
+        this.setStatus(channel.id, {
+          connected: false,
+          needsLogin: false,
+          message: "Telegram 私人账号正在后台启动。",
+        });
         const sessionString = await this.startInstance(channel);
         if (sessionString && sessionString !== channel.sessionString) {
           const index = nextChannels.findIndex((item) => item.id === channel.id);
@@ -225,32 +230,22 @@ export class TelegramUserService {
       });
     }
 
-    const instance = this.clients.get(channel.id);
-    if (instance) {
-      try {
-        if (!instance.client.connected) {
-          await instance.client.connect();
-        }
-        if (await instance.client.checkAuthorization()) {
-          return this.setStatus(channel.id, {
-            connected: true,
-            needsLogin: false,
-            message: "Telegram 私人账号已连接。",
-          });
-        }
-        await this.stopInstance(channel.id);
-        return this.setStatus(channel.id, {
-          connected: false,
-          needsLogin: true,
-          message: "Telegram 私人账号登录已失效，请重新登录。",
-        });
-      } catch (error) {
-        await this.stopInstance(channel.id);
-        return this.restartAndReport(channel, formatTelegramUserError(error));
-      }
+    if (this.clients.has(channel.id)) {
+      return this.setStatus(channel.id, {
+        connected: true,
+        needsLogin: false,
+        message: "Telegram 私人账号已连接。",
+      });
     }
 
-    return this.restartAndReport(channel, "Telegram 私人账号未运行，已尝试重启。");
+    return (
+      this.statuses.get(channel.id) ??
+      this.setStatus(channel.id, {
+        connected: false,
+        needsLogin: false,
+        message: "Telegram 私人账号正在后台启动。",
+      })
+    );
   }
 
   async stop() {

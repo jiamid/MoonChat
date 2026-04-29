@@ -81,6 +81,7 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send("rag:progress", payload);
   });
   await createWindow();
+  void runtime.startChannelsInBackground();
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {

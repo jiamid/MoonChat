@@ -15,6 +15,8 @@ import { RagService } from "./rag/ragService.js";
 import type { AppSettings } from "../../src/shared/contracts.js";
 
 export class AppRuntime {
+  private channelStartupPromise: Promise<void> | null = null;
+
   private constructor(
     public readonly db: DatabaseService,
     public readonly settings: AppSettingsService,
@@ -112,9 +114,6 @@ export class AppRuntime {
     });
 
     await db.migrate();
-    const telegramUserChannels = await telegramUser.reconfigure(settings.getSettings().channels);
-    const bootChannels = await whatsapp.reconfigure(telegramUserChannels);
-    await telegram.reconfigure(bootChannels);
 
     return new AppRuntime(db, settings, conversations, dashboard, learning, memory, rag, ai, telegram, telegramUser, whatsapp);
   }
@@ -146,13 +145,55 @@ export class AppRuntime {
     const saved = await this.settings.updateSettings(nextSettings);
     this.ai.reconfigure(saved.ai);
     this.learning.reconfigure(saved.ai);
-    const telegramUserChannels = await this.telegramUser.reconfigure(saved.channels);
-    const nextChannels = await this.whatsapp.reconfigure(telegramUserChannels);
-    await this.telegram.reconfigure(nextChannels);
+    this.channelStartupPromise = null;
+    const nextChannels = await this.reconfigureChannels(saved.channels);
     if (JSON.stringify(nextChannels) !== JSON.stringify(saved.channels)) {
       return this.settings.updateSettings({ ...saved, channels: nextChannels });
     }
     return saved;
+  }
+
+  startChannelsInBackground() {
+    if (this.channelStartupPromise) {
+      return this.channelStartupPromise;
+    }
+
+    this.channelStartupPromise = this.reconfigureChannelsFromSettings().catch((error) => {
+      console.error("Failed to start channels in background", error);
+    });
+    return this.channelStartupPromise;
+  }
+
+  private async reconfigureChannelsFromSettings() {
+    const saved = this.settings.getSettings();
+    const nextChannels = await this.reconfigureChannels(saved.channels);
+    if (JSON.stringify(nextChannels) !== JSON.stringify(saved.channels)) {
+      await this.settings.updateSettings({ ...saved, channels: nextChannels });
+    }
+  }
+
+  private async reconfigureChannels(channels: AppSettings["channels"]) {
+    let nextChannels = channels;
+
+    try {
+      nextChannels = await this.telegramUser.reconfigure(nextChannels);
+    } catch (error) {
+      console.error("Failed to reconfigure Telegram private account channels", error);
+    }
+
+    try {
+      nextChannels = await this.whatsapp.reconfigure(nextChannels);
+    } catch (error) {
+      console.error("Failed to reconfigure WhatsApp personal channels", error);
+    }
+
+    try {
+      await this.telegram.reconfigure(nextChannels);
+    } catch (error) {
+      console.error("Failed to reconfigure TelegramBot channels", error);
+    }
+
+    return nextChannels;
   }
 
   async shutdown() {
