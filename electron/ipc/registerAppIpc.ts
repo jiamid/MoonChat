@@ -76,6 +76,20 @@ export function registerAppIpc(runtime: AppRuntime) {
     runtime.conversations.listMessages(conversationId),
   );
   ipcMain.handle(
+    "conversation:get-message-page",
+    async (
+      _event,
+      payload: { conversationId: string; beforeCreatedAt?: string; limit?: number },
+    ) => runtime.conversations.listMessagePage(payload),
+  );
+  ipcMain.handle(
+    "conversation:count-unread",
+    async (
+      _event,
+      payload: { readStates: Array<{ conversationId: string; readAt?: string | null }> },
+    ) => runtime.conversations.countUnreadMessages(payload.readStates),
+  );
+  ipcMain.handle(
     "conversation:send-manual-message",
     async (
       _event,

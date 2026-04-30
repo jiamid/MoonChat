@@ -33,6 +33,11 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
+export interface ConversationMessagePage {
+  messages: ConversationMessage[];
+  hasMore: boolean;
+}
+
 export interface LearningJobSummary {
   id: string;
   jobType: string;

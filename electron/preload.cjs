@@ -22,6 +22,14 @@ contextBridge.exposeInMainWorld("moonchat", {
   listConversations: () => ipcRenderer.invoke("conversation:list"),
   getConversationMessages: (conversationId) =>
     ipcRenderer.invoke("conversation:get-messages", conversationId),
+  getConversationMessagePage: (conversationId, options) =>
+    ipcRenderer.invoke("conversation:get-message-page", {
+      conversationId,
+      beforeCreatedAt: options?.beforeCreatedAt,
+      limit: options?.limit,
+    }),
+  countUnreadMessages: (readStates) =>
+    ipcRenderer.invoke("conversation:count-unread", { readStates }),
   sendManualMessage: (conversationId, text, options) =>
     ipcRenderer.invoke("conversation:send-manual-message", {
       conversationId,

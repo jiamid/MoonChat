@@ -105,6 +105,7 @@ export class LangChainAiService {
     }
 
     const systemText = [
+      buildCurrentTimeContext(),
       this.config.autoReplySystemPrompt,
       "你在 MoonChat 的自动回复链路中工作，但回复对象是外部聊天用户；回复必须像使用者本人发出的消息。",
       "基础记忆、风格记忆、知识记忆代表使用者的长期偏好和知识边界；用户画像、关键事实、沟通策略、会话摘要只适用于当前外部聊天对象。",
@@ -183,6 +184,7 @@ export class LangChainAiService {
       [
         "system",
         [
+          buildCurrentTimeContext(),
           "你负责从聊天记录中提炼长期有价值的记忆，供后续自动回复模拟使用者时参考。",
           "你不是在生成对外回复，也不是 AI 助手对话；你的任务只是在给定聊天内容内提炼事实、画像、策略与摘要。",
           "请仅根据给定聊天内容总结，不要脑补没有出现的事实。",
@@ -466,6 +468,7 @@ export class LangChainAiService {
       new SystemMessage(
         [
           this.config.systemPrompt,
+          buildCurrentTimeContext(),
           "你是 MoonChat 的 AI 助手配置官。",
           "你工作在 AI 助手窗口里，这里是 MoonChat 的管理台，不是某个真实用户的聊天窗口。",
           "你的职责是帮助查看和管理所有渠道、所有聊天会话、所有会话用户，并在用户明确提出修改 AI 基础记忆、风格记忆、知识记忆时，输出对应的更新建议。",
@@ -543,7 +546,12 @@ export class LangChainAiService {
 
     return this.getModel().invoke([
       ...transcript,
-      new SystemMessage("工具调用轮次已结束。请基于已有上下文和工具结果直接给出最终回复，不要再调用工具。"),
+      new SystemMessage(
+        [
+          buildCurrentTimeContext(),
+          "工具调用轮次已结束。请基于已有上下文和工具结果直接给出最终回复，不要再调用工具。",
+        ].join("\n"),
+      ),
     ]);
   }
 
@@ -577,6 +585,30 @@ function createKnowledgeBaseSearchTool(searchKnowledgeBase: SearchKnowledgeBase)
       return context || "没有命中的知识库资料。";
     },
   });
+}
+
+function buildCurrentTimeContext() {
+  const now = new Date();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  const localTime = new Intl.DateTimeFormat("zh-CN", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "short",
+  }).format(now);
+
+  return [
+    "当前时间上下文:",
+    `本地当前时间: ${localTime}`,
+    `本地时区: ${timeZone}`,
+    `ISO 时间: ${now.toISOString()}`,
+    "涉及“现在、今天、明天、昨天、最近”等相对时间表达时，必须以上述当前时间为准。",
+  ].join("\n");
 }
 
 function serializeMessages(messages: ConversationMessage[]) {

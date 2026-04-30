@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
 import type { DatabaseService } from "../storage/databaseService.js";
 import { memories } from "../../../src/shared/db/schema.js";
 import type { MemoryEntry } from "../../../src/shared/contracts.js";
@@ -143,17 +143,22 @@ export class MemoryService {
     conversationId?: string;
     userId?: string;
   }): Promise<MemoryEntry[]> {
-    const memoryRows = await this.database.db.query.memories.findMany();
+    const scopeConditions = [
+      input.conversationId ? eq(memories.scopeRefId, input.conversationId) : null,
+      input.userId ? eq(memories.scopeRefId, input.userId) : null,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
 
-    return memoryRows
-      .filter((memory) => {
-        return (
-          (input.conversationId ? memory.scopeRefId === input.conversationId : false) ||
-          (input.userId ? memory.scopeRefId === input.userId : false)
-        );
-      })
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-      .map((memory) => ({
+    if (!scopeConditions.length) {
+      return [];
+    }
+
+    const memoryRows = await this.database.db
+      .select()
+      .from(memories)
+      .where(scopeConditions.length === 1 ? scopeConditions[0] : or(...scopeConditions))
+      .orderBy(desc(memories.updatedAt));
+
+    return memoryRows.map((memory) => ({
         id: memory.id,
         memoryScope: memory.memoryScope,
         memoryType: memory.memoryType,

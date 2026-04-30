@@ -6,6 +6,11 @@ import type { LangChainAiService } from "../ai/langChainAiService.js";
 import { aiReplyLogs } from "../../../src/shared/db/schema.js";
 import type { AppSettings } from "../../../src/shared/contracts.js";
 
+export type AutoReplyResult = {
+  text: string;
+  messageId: string;
+};
+
 export class AiOrchestratorService {
   private assistantConversationSender:
     | ((input: { conversationId: string; text: string }) => Promise<{ channelType: string }>)
@@ -33,7 +38,7 @@ export class AiOrchestratorService {
     conversationId: string;
     senderId: string;
     inboundText: string;
-  }) {
+  }): Promise<AutoReplyResult | null> {
     const enabled = await this.conversations.isAutoReplyEnabled(input.conversationId);
     if (!enabled) {
       return null;
@@ -98,7 +103,10 @@ export class AiOrchestratorService {
         status: "completed",
       });
 
-      return reply.trim();
+      return {
+        text: reply.trim(),
+        messageId: outbound.id,
+      };
     } catch (error) {
       await this.database.db.insert(aiReplyLogs).values({
         conversationId: input.conversationId,

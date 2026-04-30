@@ -22,6 +22,7 @@ import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
+import PersonIcon from "@mui/icons-material/Person";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SyncIcon from "@mui/icons-material/Sync";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
@@ -56,6 +57,10 @@ type AttachmentDraft = {
   kind: string;
   fileName: string;
 };
+type MessageCacheEntry = {
+  messages: ConversationMessage[];
+  hasMore: boolean;
+};
 type ChannelConnectionStatus = {
   ok: boolean;
   connected: boolean;
@@ -67,6 +72,26 @@ type ChannelConnectionStatus = {
 const workspaceViewStorageKey = "moonchat:last-view";
 const aiTabStorageKey = "moonchat:last-ai-tab";
 const chatReadAtStoragePrefix = "moonchat:chat-read-at:";
+const messagePageSize = 80;
+const messageDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const dayMessageGroupFormatter = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const sameDayConversationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const olderConversationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+});
 const chatAttachmentAccept = [
   "image/*",
   "audio/*",
@@ -110,6 +135,8 @@ export function App() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [loadedMessagesConversationId, setLoadedMessagesConversationId] = useState<string | null>(null);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [globalAiMemories, setGlobalAiMemories] = useState<MemoryEntry[]>([]);
   const [knowledgeDocuments, setKnowledgeDocuments] = useState<KnowledgeDocumentSummary[]>([]);
@@ -145,6 +172,7 @@ export function App() {
   const [whatsappQrError, setWhatsappQrError] = useState<string | null>(null);
   const [whatsappConnectedById, setWhatsappConnectedById] = useState<Record<string, boolean>>({});
   const [channelStatusById, setChannelStatusById] = useState<Record<string, ChannelConnectionStatus>>({});
+  const [unreadCountByConversationId, setUnreadCountByConversationId] = useState<Record<string, number>>({});
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const aiImageInputRef = useRef<HTMLInputElement | null>(null);
@@ -167,6 +195,9 @@ export function App() {
   const previousChannelStatusRef = useRef<Record<string, ChannelConnectionStatus>>({});
   const latestMessageRequestRef = useRef<string | null>(null);
   const previousLoadedSelectionRef = useRef<string | null>(null);
+  const messageCacheRef = useRef(new Map<string, MessageCacheEntry>());
+  const memoryCacheRef = useRef(new Map<string, MemoryEntry[]>());
+  const isPrependingOlderMessagesRef = useRef(false);
 
   const setView = (nextView: AppView) => {
     setViewState(nextView);
@@ -189,8 +220,9 @@ export function App() {
     isAssistantView ||
     selectedConversation?.channelType === "telegram" ||
     selectedConversation?.channelType === "telegram_user";
-  const channelConversations = conversations.filter(
-    (conversation) => conversation.channelType !== "local_ai",
+  const channelConversations = useMemo(
+    () => conversations.filter((conversation) => conversation.channelType !== "local_ai"),
+    [conversations],
   );
   const channelNameById = useMemo(
     () =>
@@ -267,6 +299,8 @@ export function App() {
     () => findFirstUnreadInboundMessageId(selectedConversationId, filteredMessages),
     [filteredMessages, selectedConversationId],
   );
+  const groupedChatMessages = useMemo(() => groupMessagesByDay(filteredMessages), [filteredMessages]);
+  const groupedAssistantMessages = useMemo(() => groupMessagesByDay(messages), [messages]);
 
   async function refreshWorkspace() {
     const [snapshot, conversationList] = await Promise.all([
@@ -276,6 +310,7 @@ export function App() {
 
     setDashboard(snapshot);
     setConversations(conversationList);
+    void refreshUnreadCounts(conversationList);
     setSelectedConversationId((current) => {
       if (current && conversationList.some((item) => item.id === current)) {
         return current;
@@ -284,6 +319,26 @@ export function App() {
     });
 
     return conversationList;
+  }
+
+  async function refreshUnreadCounts(conversationList = conversations) {
+    const readStates = conversationList
+      .filter((conversation) => conversation.channelType !== "local_ai")
+      .map((conversation) => ({
+        conversationId: conversation.id,
+        readAt: window.localStorage.getItem(`${chatReadAtStoragePrefix}${conversation.id}`),
+      }));
+
+    if (!readStates.length) {
+      setUnreadCountByConversationId({});
+      return;
+    }
+
+    try {
+      setUnreadCountByConversationId(await window.moonchat.countUnreadMessages(readStates));
+    } catch (unreadError) {
+      console.error("Failed to refresh unread counts", unreadError);
+    }
   }
 
   async function refreshSettings() {
@@ -313,21 +368,78 @@ export function App() {
 
   async function refreshMessages(conversationId: string) {
     latestMessageRequestRef.current = conversationId;
-    const nextMessages = await window.moonchat.getConversationMessages(conversationId);
+    const page = await window.moonchat.getConversationMessagePage(conversationId, {
+      limit: messagePageSize,
+    });
     if (latestMessageRequestRef.current !== conversationId) {
       return;
     }
-    setMessages(nextMessages);
+    const cachedPage = messageCacheRef.current.get(conversationId);
+    const nextMessages =
+      cachedPage && cachedPage.messages.length > page.messages.length
+        ? mergeMessageLists(cachedPage.messages, page.messages)
+        : page.messages;
+    const nextHasMore =
+      cachedPage && cachedPage.messages.length > page.messages.length
+        ? cachedPage.hasMore
+        : page.hasMore;
+    messageCacheRef.current.set(conversationId, {
+      messages: nextMessages,
+      hasMore: nextHasMore,
+    });
+    setMessages((current) => (areMessageListsEqual(current, nextMessages) ? current : nextMessages));
+    setHasOlderMessages(nextHasMore);
     setLoadedMessagesConversationId(conversationId);
   }
 
+  async function loadOlderMessages() {
+    if (!selectedConversationId || isLoadingOlderMessages || !hasOlderMessages || messages.length === 0) {
+      return;
+    }
+
+    const conversationId = selectedConversationId;
+    const canvas = chatMessageCanvasRef.current;
+    const previousScrollHeight = canvas?.scrollHeight ?? 0;
+    const beforeCreatedAt = messages[0].createdAt;
+
+    setIsLoadingOlderMessages(true);
+    try {
+      const page = await window.moonchat.getConversationMessagePage(conversationId, {
+        beforeCreatedAt,
+        limit: messagePageSize,
+      });
+      if (selectedConversationId !== conversationId) {
+        return;
+      }
+
+      const nextMessages = mergeMessageLists(page.messages, messages);
+      messageCacheRef.current.set(conversationId, {
+        messages: nextMessages,
+        hasMore: page.hasMore,
+      });
+      isPrependingOlderMessagesRef.current = true;
+      setMessages(nextMessages);
+      setHasOlderMessages(page.hasMore);
+      window.requestAnimationFrame(() => {
+        if (canvas) {
+          canvas.scrollTop += Math.max(0, canvas.scrollHeight - previousScrollHeight);
+        }
+        isPrependingOlderMessagesRef.current = false;
+      });
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "加载更早消息失败。");
+    } finally {
+      setIsLoadingOlderMessages(false);
+    }
+  }
+
   async function refreshMemories(conversation: ConversationSummary) {
-    setMemories(
-      await window.moonchat.listRelevantMemories({
-        conversationId: conversation.id,
-        userId: conversation.externalUserId,
-      }),
-    );
+    const nextMemories = await window.moonchat.listRelevantMemories({
+      conversationId: conversation.id,
+      userId: conversation.externalUserId,
+    });
+    memoryCacheRef.current.set(conversation.id, nextMemories);
+    setMemories((current) => (areMemoryListsEqual(current, nextMemories) ? current : nextMemories));
   }
 
   async function refreshAll() {
@@ -426,21 +538,34 @@ export function App() {
     if (!selectedConversationId) {
       setMessages([]);
       setLoadedMessagesConversationId(null);
+      setHasOlderMessages(false);
       setMemories([]);
       previousLoadedSelectionRef.current = null;
       return;
     }
 
     if (previousLoadedSelectionRef.current !== selectedConversationId) {
-      setLoadedMessagesConversationId(null);
+      const cachedPage = messageCacheRef.current.get(selectedConversationId);
+      if (cachedPage) {
+        setMessages(cachedPage.messages);
+        setHasOlderMessages(cachedPage.hasMore);
+        setLoadedMessagesConversationId(selectedConversationId);
+      } else {
+        setLoadedMessagesConversationId(null);
+        setHasOlderMessages(false);
+      }
       previousLoadedSelectionRef.current = selectedConversationId;
     }
-    const conversation = conversations.find((item) => item.id === selectedConversationId);
+    const conversation = selectedConversation?.id === selectedConversationId ? selectedConversation : null;
+    const cachedMemories = memoryCacheRef.current.get(selectedConversationId);
+    if (cachedMemories) {
+      setMemories(cachedMemories);
+    }
     void refreshMessages(selectedConversationId);
     if (conversation) {
       void refreshMemories(conversation);
     }
-  }, [selectedConversationId, conversations]);
+  }, [selectedConversationId]);
 
   useEffect(() => {
     if (view === "ai" && aiTab === "assistant" && localAiConversation) {
@@ -506,12 +631,22 @@ export function App() {
       activeConversationId !== previousChatConversationIdRef.current ||
       readyChatConversationId !== activeConversationId;
 
+    if (isPrependingOlderMessagesRef.current) {
+      previousChatMessageCountRef.current = messages.length;
+      previousChatConversationIdRef.current = activeConversationId;
+      return;
+    }
+
     if (hasNewChatMessage) {
       const latestMessageCreatedAt = messages.at(-1)?.createdAt ?? null;
       positionCanvasAfterRender(chatMessageCanvasRef.current, chatUnreadAnchorRef.current, () => {
         setReadyChatConversationId(activeConversationId);
         if (activeConversationId && latestMessageCreatedAt) {
           writeConversationReadAt(activeConversationId, latestMessageCreatedAt);
+          setUnreadCountByConversationId((current) => ({
+            ...current,
+            [activeConversationId]: 0,
+          }));
         }
       });
     }
@@ -1848,6 +1983,11 @@ export function App() {
                     <div className="session-card-top">
                       <div className="session-avatar" aria-hidden="true">
                         {getConversationDisplayName(conversation).slice(0, 1).toUpperCase()}
+                        {unreadCountByConversationId[conversation.id] ? (
+                          <span className="unread-badge">
+                            {formatUnreadCount(unreadCountByConversationId[conversation.id])}
+                          </span>
+                        ) : null}
                       </div>
                       <div className="session-card-main">
                         <div className="session-title-row">
@@ -1982,13 +2122,22 @@ export function App() {
                   <EmptyState title="没有匹配的消息" description="可以清空筛选条件，或等待新消息进来。" />
                 ) : (
                   <>
+                    {hasOlderMessages ? (
+                      <button
+                        className="load-older-messages-button"
+                        onClick={() => void loadOlderMessages()}
+                        disabled={isLoadingOlderMessages}
+                      >
+                        {isLoadingOlderMessages ? "加载中" : "加载更早消息"}
+                      </button>
+                    ) : null}
                     {selectedConversation.learningStatus === "running" ? (
                       <div className="thread-status-banner">
                         <span className="inline-spinner" aria-hidden="true" />
                         该会话正在学习中
                       </div>
                     ) : null}
-                    {groupMessagesByDay(filteredMessages).map((group) => (
+                    {groupedChatMessages.map((group) => (
                       <div key={group.label} className="message-group">
                         <div className="message-group-label">{group.label}</div>
                         {group.items.map((message) => (
@@ -2224,7 +2373,7 @@ export function App() {
                       {!activeConversation ? (
                         <EmptyState title="AI 助手暂不可用" description="请刷新页面后再试。" />
                       ) : (
-                        groupMessagesByDay(messages).map((group) => (
+                        groupedAssistantMessages.map((group) => (
                           <div key={group.label} className="message-group">
                             <div className="message-group-label">{group.label}</div>
                             {group.items.map((message) =>
@@ -2911,37 +3060,46 @@ function renderMessageBubble({
     !message.isDeleted &&
     (message.senderType === "human_agent" || message.senderType === "ai_agent");
   const attachment = getMessageAttachment(message);
+  const bubbleSenderBadge =
+    layout === "assistant" && !isOutbound
+      ? { className: "ai", title: "MoonChat AI", icon: <SmartToyIcon fontSize="inherit" /> }
+      : layout === "default" && isOutbound && message.senderType === "ai_agent"
+        ? { className: "ai", title: "AI 回复", icon: <SmartToyIcon fontSize="inherit" /> }
+        : layout === "default" && isOutbound && message.senderType === "human_agent"
+          ? { className: "human", title: "人工回复", icon: <PersonIcon fontSize="inherit" /> }
+          : null;
+  const bubbleTitle = [
+    bubbleSenderBadge?.title,
+    formatDateTime(message.createdAt),
+    message.editedAt ? "已编辑" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div
       key={message.id}
+      title={bubbleTitle}
       className={
         isOutbound
           ? `chat-bubble outbound ${layout === "assistant" ? "assistant-bubble user" : ""}`.trim()
           : `chat-bubble inbound ${layout === "assistant" ? "assistant-bubble ai" : ""}`.trim()
       }
     >
+      {bubbleSenderBadge ? (
+        <span
+          className={`bubble-sender-badge ${bubbleSenderBadge.className}`}
+          title={bubbleSenderBadge.title}
+          aria-label={bubbleSenderBadge.title}
+        >
+          {bubbleSenderBadge.icon}
+        </span>
+      ) : null}
       {showLearnedBadge && layout === "default" ? (
         <span className="bubble-learned-badge" title="该消息所在会话已学习" aria-label="该消息所在会话已学习">
           <AutoAwesomeIcon fontSize="inherit" />
         </span>
       ) : null}
-      <div className="bubble-meta">
-        {layout === "assistant" ? (
-          <>
-            {!isOutbound ? <span className="meta-pill">MoonChat AI</span> : null}
-            <span>{formatDateTime(message.createdAt)}</span>
-          </>
-        ) : !isOutbound ? (
-          <span>{formatDateTime(message.createdAt)}</span>
-        ) : (
-          <>
-            <span className="meta-pill">{labelWorkbenchSender(message.senderType)}</span>
-            <span>{formatDateTime(message.createdAt)}</span>
-          </>
-        )}
-        {message.editedAt ? <span>已编辑</span> : null}
-      </div>
 
       {isEditing ? (
         <div className="message-edit-box">
@@ -2965,14 +3123,24 @@ function renderMessageBubble({
             {message.contentText || (attachment ? " " : "")}
           </p>
           {canManageMessage ? (
-            <div className="message-actions">
+            <div className="message-actions bubble-hover-actions">
               {!attachment ? (
-                <button className="text-button" onClick={() => onEdit(message.id, message.contentText)}>
-                  编辑
+                <button
+                  className="text-button icon-action-button"
+                  onClick={() => onEdit(message.id, message.contentText)}
+                  aria-label="编辑消息"
+                  title="编辑消息"
+                >
+                  <EditIcon fontSize="small" />
                 </button>
               ) : null}
-              <button className="text-button danger" onClick={() => void onDelete(message.id)}>
-                删除
+              <button
+                className="text-button danger icon-action-button"
+                onClick={() => void onDelete(message.id)}
+                aria-label="删除消息"
+                title="删除消息"
+              >
+                <DeleteIcon fontSize="small" />
               </button>
             </div>
           ) : null}
@@ -3108,11 +3276,6 @@ function labelSender(senderType: string) {
   return senderType;
 }
 
-function labelWorkbenchSender(senderType: string) {
-  if (senderType === "ai_agent") return "AI";
-  return "人工";
-}
-
 function describeSource(sourceType: string) {
   if (sourceType === "telegram") return "TelegramBot";
   if (sourceType === "telegram_user") return "Telegram 私人账号";
@@ -3160,12 +3323,7 @@ function formatBytes(value: number) {
 }
 
 function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return messageDateTimeFormatter.format(new Date(value));
 }
 
 function formatConversationTime(value: string) {
@@ -3173,25 +3331,20 @@ function formatConversationTime(value: string) {
   const now = new Date();
   const sameDay = date.toDateString() === now.toDateString();
 
-  return new Intl.DateTimeFormat("zh-CN", sameDay ? {
-    hour: "2-digit",
-    minute: "2-digit",
-  } : {
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
+  return (sameDay ? sameDayConversationTimeFormatter : olderConversationTimeFormatter).format(date);
 }
 
 function groupMessagesByDay(messages: ConversationMessage[]) {
   const groups = new Map<string, ConversationMessage[]>();
 
   for (const message of messages) {
-    const label = new Intl.DateTimeFormat("zh-CN", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date(message.createdAt));
-    groups.set(label, [...(groups.get(label) ?? []), message]);
+    const label = dayMessageGroupFormatter.format(new Date(message.createdAt));
+    const items = groups.get(label);
+    if (items) {
+      items.push(message);
+    } else {
+      groups.set(label, [message]);
+    }
   }
 
   return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
@@ -3328,6 +3481,54 @@ function positionElementAfterRender(element: HTMLElement | null, onPositioned?: 
   });
 }
 
+function areMessageListsEqual(current: ConversationMessage[], next: ConversationMessage[]) {
+  if (current.length !== next.length) {
+    return false;
+  }
+
+  return current.every((message, index) => {
+    const nextMessage = next[index];
+    return (
+      message.id === nextMessage.id &&
+      message.contentText === nextMessage.contentText &&
+      message.editedAt === nextMessage.editedAt &&
+      message.isDeleted === nextMessage.isDeleted &&
+      message.attachmentDataUrl === nextMessage.attachmentDataUrl &&
+      message.attachmentImageDataUrl === nextMessage.attachmentImageDataUrl
+    );
+  });
+}
+
+function areMemoryListsEqual(current: MemoryEntry[], next: MemoryEntry[]) {
+  if (current.length !== next.length) {
+    return false;
+  }
+
+  return current.every((memory, index) => {
+    const nextMemory = next[index];
+    return (
+      memory.id === nextMemory.id &&
+      memory.content === nextMemory.content &&
+      memory.summary === nextMemory.summary &&
+      memory.updatedAt === nextMemory.updatedAt
+    );
+  });
+}
+
+function mergeMessageLists(olderMessages: ConversationMessage[], currentMessages: ConversationMessage[]) {
+  if (!olderMessages.length) {
+    return currentMessages;
+  }
+
+  const byId = new Map<string, ConversationMessage>();
+  for (const message of [...olderMessages, ...currentMessages]) {
+    byId.set(message.id, message);
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+}
+
 function findFirstUnreadInboundMessageId(
   conversationId: string | null,
   visibleMessages: ConversationMessage[],
@@ -3350,6 +3551,10 @@ function findFirstUnreadInboundMessageId(
 
 function writeConversationReadAt(conversationId: string, createdAt: string) {
   window.localStorage.setItem(`${chatReadAtStoragePrefix}${conversationId}`, createdAt);
+}
+
+function formatUnreadCount(count: number) {
+  return count > 999 ? "..." : String(count);
 }
 
 function readFileAsDataUrl(file: File) {

@@ -4,6 +4,7 @@ import type {
   AppSettings,
   ChannelConfig,
   ConversationMessage,
+  ConversationMessagePage,
   ConversationSummary,
   KnowledgeDocumentSummary,
   KnowledgeSearchResult,
@@ -93,6 +94,19 @@ const api = {
     ipcRenderer.invoke("conversation:list"),
   getConversationMessages: (conversationId: string): Promise<ConversationMessage[]> =>
     ipcRenderer.invoke("conversation:get-messages", conversationId),
+  getConversationMessagePage: (
+    conversationId: string,
+    options?: { beforeCreatedAt?: string; limit?: number },
+  ): Promise<ConversationMessagePage> =>
+    ipcRenderer.invoke("conversation:get-message-page", {
+      conversationId,
+      beforeCreatedAt: options?.beforeCreatedAt,
+      limit: options?.limit,
+    }),
+  countUnreadMessages: (
+    readStates: Array<{ conversationId: string; readAt?: string | null }>,
+  ): Promise<Record<string, number>> =>
+    ipcRenderer.invoke("conversation:count-unread", { readStates }),
   sendManualMessage: (
     conversationId: string,
     text: string,

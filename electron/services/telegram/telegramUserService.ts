@@ -461,7 +461,12 @@ export class TelegramUserService {
       });
 
       if (reply) {
-        await this.sendManualMessage(channelId, chatId, reply);
+        const sent = await this.sendManualMessage(channelId, chatId, reply.text);
+        await this.conversations.attachExternalMessageIdToMessage({
+          messageId: reply.messageId,
+          externalMessageId: String(sent.id),
+          sourceType: "telegram_user",
+        });
       }
     } catch (error) {
       console.error("Failed to process Telegram private account message", {

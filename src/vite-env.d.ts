@@ -72,6 +72,13 @@ interface Window {
     getConversationMessages: (
       conversationId: string,
     ) => Promise<import("./shared/contracts").ConversationMessage[]>;
+    getConversationMessagePage: (
+      conversationId: string,
+      options?: { beforeCreatedAt?: string; limit?: number },
+    ) => Promise<import("./shared/contracts").ConversationMessagePage>;
+    countUnreadMessages: (
+      readStates: Array<{ conversationId: string; readAt?: string | null }>,
+    ) => Promise<Record<string, number>>;
     sendManualMessage: (
       conversationId: string,
       text: string,

@@ -335,7 +335,12 @@ export class WhatsappPersonalService {
       });
 
       if (reply) {
-        await this.sendManualMessage(channelId, remoteJid, reply);
+        const sent = await this.sendManualMessage(channelId, remoteJid, reply.text);
+        await this.conversations.attachExternalMessageIdToMessage({
+          messageId: reply.messageId,
+          externalMessageId: sent?.key.id ?? crypto.randomUUID(),
+          sourceType: "whatsapp_personal",
+        });
       }
     } catch (error) {
       console.error("Failed to process WhatsApp private account message", {

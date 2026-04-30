@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, isNull, lt, or } from "drizzle-orm";
 import type { DatabaseService } from "./databaseService.js";
 import {
   conversationAiSettings,
@@ -11,6 +11,7 @@ import {
 } from "../../../src/shared/db/schema.js";
 import type {
   ConversationMessage,
+  ConversationMessagePage,
   ConversationSummary,
 } from "../../../src/shared/contracts.js";
 
@@ -146,6 +147,81 @@ export class ConversationService {
     }));
   }
 
+  async listMessagePage(input: {
+    conversationId: string;
+    beforeCreatedAt?: string;
+    limit?: number;
+  }): Promise<ConversationMessagePage> {
+    const limit = Math.min(Math.max(input.limit ?? 80, 1), 300);
+    const rows = await this.database.db
+      .select({
+        id: messages.id,
+        conversationId: messages.conversationId,
+        externalMessageId: messages.externalMessageId,
+        senderType: messages.senderType,
+        senderId: messages.senderId,
+        sourceType: messages.sourceType,
+        messageRole: messages.messageRole,
+        contentText: messages.contentText,
+        contentType: messages.contentType,
+        attachmentImageDataUrl: messages.attachmentImageDataUrl,
+        attachmentDataUrl: messages.attachmentDataUrl,
+        attachmentKind: messages.attachmentKind,
+        attachmentMimeType: messages.attachmentMimeType,
+        attachmentFileName: messages.attachmentFileName,
+        replyToMessageId: messages.replyToMessageId,
+        isDeleted: messages.isDeleted,
+        editedAt: messages.editedAt,
+        createdAt: messages.createdAt,
+      })
+      .from(messages)
+      .where(
+        input.beforeCreatedAt
+          ? and(
+              eq(messages.conversationId, input.conversationId),
+              lt(messages.createdAt, input.beforeCreatedAt),
+            )
+          : eq(messages.conversationId, input.conversationId),
+      )
+      .orderBy(desc(messages.createdAt))
+      .limit(limit + 1);
+
+    return {
+      messages: rows
+        .slice(0, limit)
+        .reverse()
+        .map((row) => ({
+          ...row,
+          isDeleted: Boolean(row.isDeleted),
+        })),
+      hasMore: rows.length > limit,
+    };
+  }
+
+  async countUnreadMessages(
+    readStates: Array<{ conversationId: string; readAt?: string | null }>,
+  ): Promise<Record<string, number>> {
+    const entries = await Promise.all(
+      readStates.map(async ({ conversationId, readAt }) => {
+        const [row] = await this.database.db
+          .select({ value: count() })
+          .from(messages)
+          .where(
+            and(
+              eq(messages.conversationId, conversationId),
+              eq(messages.messageRole, "inbound"),
+              eq(messages.isDeleted, 0),
+              gt(messages.createdAt, readAt || "1970-01-01T00:00:00.000Z"),
+            ),
+          );
+
+        return [conversationId, row?.value ?? 0] as const;
+      }),
+    );
+
+    return Object.fromEntries(entries);
+  }
+
   async setAutoReply(conversationId: string, enabled: boolean) {
     const existing = await this.database.db.query.conversationAiSettings.findFirst({
       where: eq(conversationAiSettings.conversationId, conversationId),
@@ -253,6 +329,40 @@ export class ConversationService {
       return;
     }
 
+    if (input.messageRole === "outbound") {
+      const pendingAiReply = await this.database.db.query.messages.findFirst({
+        where: and(
+          eq(messages.conversationId, input.conversationId),
+          isNull(messages.externalMessageId),
+          eq(messages.messageRole, "outbound"),
+          eq(messages.senderType, "ai_agent"),
+          eq(messages.sourceType, "moonchat_ai"),
+          eq(messages.contentText, input.text),
+        ),
+        orderBy: [desc(messages.createdAt)],
+      });
+
+      if (pendingAiReply && !pendingAiReply.isDeleted) {
+        await this.database.db
+          .update(messages)
+          .set({
+            externalMessageId: input.externalMessageId,
+            contentText: input.text,
+            contentType: attachment.contentType,
+            attachmentImageDataUrl: attachment.imageDataUrl,
+            attachmentDataUrl: attachment.dataUrl,
+            attachmentKind: attachment.kind,
+            attachmentMimeType: attachment.mimeType,
+            attachmentFileName: attachment.fileName,
+            replyToMessageId: input.replyToMessageId,
+            editedAt: now,
+          })
+          .where(eq(messages.id, pendingAiReply.id));
+        await this.touchConversation(input.conversationId);
+        return;
+      }
+    }
+
     await this.database.db.insert(messages).values({
       conversationId: input.conversationId,
       externalMessageId: input.externalMessageId,
@@ -272,6 +382,30 @@ export class ConversationService {
     });
 
     await this.touchConversation(input.conversationId);
+  }
+
+  async attachExternalMessageIdToMessage(input: {
+    messageId: string;
+    externalMessageId: string;
+    sourceType?: string;
+  }) {
+    const existing = await this.database.db.query.messages.findFirst({
+      where: eq(messages.id, input.messageId),
+    });
+
+    if (!existing || existing.isDeleted) {
+      return;
+    }
+
+    await this.database.db
+      .update(messages)
+      .set({
+        externalMessageId: input.externalMessageId,
+        sourceType: input.sourceType ?? existing.sourceType,
+      })
+      .where(eq(messages.id, input.messageId));
+
+    await this.touchConversation(existing.conversationId);
   }
 
   async upsertInboundTelegramMessageEdit(input: {

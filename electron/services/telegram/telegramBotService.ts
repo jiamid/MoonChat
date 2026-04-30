@@ -306,7 +306,12 @@ export class TelegramBotService {
         });
 
         if (reply) {
-          await bot.sendMessage(message.chat.id, reply);
+          const sent = await bot.sendMessage(message.chat.id, reply.text);
+          await this.conversations.attachExternalMessageIdToMessage({
+            messageId: reply.messageId,
+            externalMessageId: String(sent.message_id),
+            sourceType: "telegram",
+          });
         }
       }
     } catch (error) {

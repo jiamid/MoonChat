@@ -311,6 +311,9 @@ export const bootstrapSql = `
   CREATE INDEX IF NOT EXISTS idx_memories_scope_type_ref
     ON memories (memory_scope, memory_type, scope_ref_id);
 
+  CREATE INDEX IF NOT EXISTS idx_memories_scope_ref_updated_at
+    ON memories (scope_ref_id, updated_at DESC);
+
   CREATE INDEX IF NOT EXISTS idx_learning_jobs_status_updated_at
     ON learning_jobs (status, updated_at DESC);
 
