@@ -31,6 +31,51 @@ export function getMessageAttachment(message: ConversationMessage): RenderAttach
   };
 }
 
+export function chatMessageElementId(internalMessageId: string): string {
+  return `moonchat-msg-${internalMessageId}`;
+}
+
+export function findMessageByExternalMessageId(
+  messageList: ConversationMessage[],
+  externalMessageId: string,
+): ConversationMessage | undefined {
+  return messageList.find((m) => m.externalMessageId === externalMessageId);
+}
+
+const replyPreviewAttachmentLabels: Record<string, string> = {
+  image: "[图片]",
+  audio: "[音频]",
+  video: "[视频]",
+  file: "[文件]",
+};
+
+export function getReplyReferenceTextPreview(message: ConversationMessage, maxLength = 160): string {
+  if (message.isDeleted) {
+    return "（消息已删除）";
+  }
+  const attachment = getMessageAttachment(message);
+  const trimmed = message.contentText.trim();
+  if (trimmed) {
+    return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength)}…`;
+  }
+  if (attachment) {
+    return replyPreviewAttachmentLabels[attachment.kind] ?? "[附件]";
+  }
+  return "（无文字内容）";
+}
+
+export function scrollChatMessageIntoView(internalMessageId: string): void {
+  const el = document.getElementById(chatMessageElementId(internalMessageId));
+  if (!el) {
+    return;
+  }
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("chat-message-scroll-highlight");
+  window.setTimeout(() => {
+    el.classList.remove("chat-message-scroll-highlight");
+  }, 1200);
+}
+
 export function inferAttachmentKind(mimeType: string | null): string {
   if (mimeType?.startsWith("image/")) return "image";
   if (mimeType?.startsWith("audio/")) return "audio";

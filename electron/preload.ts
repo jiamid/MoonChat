@@ -15,6 +15,11 @@ import type {
 const api = {
   getDashboardSnapshot: (): Promise<AppDashboardSnapshot> =>
     ipcRenderer.invoke("app:get-dashboard-snapshot"),
+  openImagePreview: (payload: {
+    dataUrl: string;
+    fileName?: string | null;
+    mimeType?: string | null;
+  }): Promise<{ ok: boolean }> => ipcRenderer.invoke("app:open-image-preview", payload),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   updateSettings: (settings: AppSettings): Promise<AppSettings> =>
     ipcRenderer.invoke("settings:update", settings),

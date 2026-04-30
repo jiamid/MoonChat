@@ -735,9 +735,7 @@ function getTelegramUserReplyToMessageId(message: Api.Message) {
 }
 
 function describeTelegramUserMessage(message: Api.Message, attachment: TelegramAttachment | undefined) {
-  if (attachment?.kind === "image") return "[图片]";
-  if (attachment?.kind === "audio") return "[音频]";
-  if (attachment?.kind === "video") return "[视频]";
+  if (attachment?.kind === "image" || attachment?.kind === "audio" || attachment?.kind === "video") return "";
   if (attachment?.kind === "file") return `[文件${attachment.fileName ? `：${attachment.fileName}` : ""}]`;
   if (message.media instanceof Api.MessageMediaGeo || message.media instanceof Api.MessageMediaVenue) return "[位置]";
   if (message.media instanceof Api.MessageMediaContact) return "[联系人]";

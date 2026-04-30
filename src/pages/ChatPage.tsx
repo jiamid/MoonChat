@@ -7,7 +7,12 @@ import SyncIcon from "@mui/icons-material/Sync";
 import type { ConversationMessage, ConversationSummary, MemoryEntry } from "../shared/contracts";
 import type { AttachmentDraft } from "../app/types";
 import { chatAttachmentAccept } from "../app/constants";
-import { formatConversationTime, formatUnreadCount } from "../app/utils";
+import {
+  chatMessageElementId,
+  formatConversationTime,
+  formatUnreadCount,
+  scrollChatMessageIntoView,
+} from "../app/utils";
 import { ChatDetailContent } from "../components/chat/ChatDetailContent";
 import { EmptyState } from "../components/common/EmptyState";
 import { MessageAttachmentPreview } from "../components/messages/MessageAttachmentPreview";
@@ -23,6 +28,7 @@ export function ChatPage({
   filteredConversations,
   selectedConversation,
   selectedConversationId,
+  conversationMessages,
   filteredMessages,
   groupedChatMessages,
   unreadCountByConversationId,
@@ -78,6 +84,8 @@ export function ChatPage({
   filteredConversations: ConversationSummary[];
   selectedConversation: ConversationSummary | null;
   selectedConversationId: string | null;
+  /** 当前会话已加载的完整消息列表，用于解析回复引用中的原文摘要 */
+  conversationMessages: ConversationMessage[];
   filteredMessages: ConversationMessage[];
   groupedChatMessages: MessageGroup[];
   unreadCountByConversationId: Record<string, number>;
@@ -320,7 +328,7 @@ export function ChatPage({
                   <div key={group.label} className="message-group">
                     <div className="message-group-label">{group.label}</div>
                     {group.items.map((message) => (
-                      <div key={message.id} className="message-item-frame">
+                      <div key={message.id} id={chatMessageElementId(message.id)} className="message-item-frame">
                         {message.id === chatUnreadMessageId ? (
                           <div ref={chatUnreadAnchorRef} className="unread-message-anchor">
                             新消息
@@ -334,6 +342,8 @@ export function ChatPage({
                             learnedAtTimestamp !== null &&
                             new Date(message.createdAt).getTime() <= learnedAtTimestamp
                           }
+                          replyLookupMessages={conversationMessages}
+                          onNavigateToReply={scrollChatMessageIntoView}
                           onCancelEdit={onCancelEdit}
                           onChangeEdit={onChangeEdit}
                           onDelete={onDeleteMessage}

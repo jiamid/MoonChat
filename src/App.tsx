@@ -729,6 +729,7 @@ export function App() {
           filteredConversations={filteredConversations}
           selectedConversation={selectedConversation}
           selectedConversationId={selectedConversationId}
+          conversationMessages={messages}
           filteredMessages={filteredMessages}
           groupedChatMessages={groupedChatMessages}
           unreadCountByConversationId={unreadCountByConversationId}

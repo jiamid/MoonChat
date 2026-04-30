@@ -1,9 +1,41 @@
-import { dialog, ipcMain, shell } from "electron";
+import { copyFile } from "node:fs/promises";
 import type { AppRuntime } from "../services/runtime.js";
 import type { ChannelConfig } from "../../src/shared/contracts.js";
+import { dialog, ipcMain, shell } from "electron";
+import { getImagePreviewTempPath } from "./imagePreviewRegistry.js";
+import { openImagePreviewWindow } from "./imagePreviewWindow.js";
 
 export function registerAppIpc(runtime: AppRuntime) {
   ipcMain.handle("app:get-dashboard-snapshot", async () => runtime.dashboard.getSnapshot());
+  ipcMain.handle(
+    "app:open-image-preview",
+    async (_event, payload: { dataUrl: string; fileName?: string | null; mimeType?: string | null }) => {
+      await openImagePreviewWindow(payload);
+      return { ok: true };
+    },
+  );
+  ipcMain.handle(
+    "app:image-preview-save-as",
+    async (_event, payload: { previewId: string; defaultFileName: string }) => {
+      const src = getImagePreviewTempPath(payload.previewId);
+      if (!src) {
+        throw new Error("预览已关闭或文件已失效，请重新打开图片。");
+      }
+      const safeName = payload.defaultFileName?.trim() || "image.png";
+      const result = await dialog.showSaveDialog({
+        defaultPath: safeName,
+        filters: [
+          { name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
+          { name: "所有文件", extensions: ["*"] },
+        ],
+      });
+      if (result.canceled || !result.filePath) {
+        return { ok: false, canceled: true as const };
+      }
+      await copyFile(src, result.filePath);
+      return { ok: true as const, filePath: result.filePath };
+    },
+  );
   ipcMain.handle("settings:get", async () => runtime.getSettings());
   ipcMain.handle("settings:update", async (_event, settings) => runtime.updateSettings(settings));
   ipcMain.handle("telegram-user:request-code", async (_event, channel: ChannelConfig) =>

@@ -440,9 +440,7 @@ function inferAttachmentKind(mimeType: string | undefined, fallback: "image" | "
 }
 
 function describeTelegramBotMessage(message: TelegramBot.Message, attachment: TelegramAttachment | undefined) {
-  if (attachment?.kind === "image") return "[图片]";
-  if (attachment?.kind === "audio") return "[音频]";
-  if (attachment?.kind === "video") return "[视频]";
+  if (attachment?.kind === "image" || attachment?.kind === "audio" || attachment?.kind === "video") return "";
   if (attachment?.kind === "file") return `[文件${attachment.fileName ? `：${attachment.fileName}` : ""}]`;
   if (message.contact) return "[联系人]";
   if (message.location || message.venue) return "[位置]";

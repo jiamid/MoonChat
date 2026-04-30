@@ -3,6 +3,11 @@
 interface Window {
   moonchat: {
     getDashboardSnapshot: () => Promise<import("./shared/contracts").AppDashboardSnapshot>;
+    openImagePreview: (payload: {
+      dataUrl: string;
+      fileName?: string | null;
+      mimeType?: string | null;
+    }) => Promise<{ ok: boolean }>;
     getSettings: () => Promise<import("./shared/contracts").AppSettings>;
     updateSettings: (
       settings: import("./shared/contracts").AppSettings,

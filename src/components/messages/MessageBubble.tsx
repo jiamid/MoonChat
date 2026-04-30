@@ -4,7 +4,12 @@ import EditIcon from "@mui/icons-material/Edit";
 import PersonIcon from "@mui/icons-material/Person";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
 import type { ConversationMessage } from "../../shared/contracts";
-import { formatDateTime, getMessageAttachment } from "../../app/utils";
+import {
+  findMessageByExternalMessageId,
+  formatDateTime,
+  getMessageAttachment,
+  getReplyReferenceTextPreview,
+} from "../../app/utils";
 import { MessageAttachmentPreview } from "./MessageAttachmentPreview";
 
 export function MessageBubble({
@@ -13,6 +18,8 @@ export function MessageBubble({
   editingDraft,
   editingMessageId,
   showLearnedBadge = false,
+  replyLookupMessages,
+  onNavigateToReply,
   onCancelEdit,
   onChangeEdit,
   onDelete,
@@ -24,6 +31,9 @@ export function MessageBubble({
   editingDraft: string;
   editingMessageId: string | null;
   showLearnedBadge?: boolean;
+  /** 用于根据 Telegram externalMessageId 解析被回复消息的摘要；不传则仅显示「回复 #id」。 */
+  replyLookupMessages?: ConversationMessage[];
+  onNavigateToReply?: (internalMessageId: string) => void;
   onCancelEdit: () => void;
   onChangeEdit: (value: string) => void;
   onDelete: (messageId: string) => Promise<void>;
@@ -39,6 +49,7 @@ export function MessageBubble({
     !message.isDeleted &&
     (message.senderType === "human_agent" || message.senderType === "ai_agent");
   const attachment = getMessageAttachment(message);
+  const visibleContentText = getVisibleContentText(message.contentText, attachment?.kind);
   const bubbleSenderBadge =
     layout === "default" && isOutbound && message.senderType === "ai_agent"
         ? { className: "ai", title: "AI 回复", icon: <SmartToyIcon fontSize="inherit" /> }
@@ -52,6 +63,11 @@ export function MessageBubble({
   ]
     .filter(Boolean)
     .join(" · ");
+
+  const replyTarget =
+    message.replyToMessageId && replyLookupMessages
+      ? findMessageByExternalMessageId(replyLookupMessages, message.replyToMessageId)
+      : undefined;
 
   return (
     <div
@@ -93,12 +109,46 @@ export function MessageBubble({
       ) : (
         <>
           {message.replyToMessageId ? (
-            <div className="reply-reference">回复 #{message.replyToMessageId}</div>
+            replyLookupMessages ? (
+              replyTarget && onNavigateToReply ? (
+                <button
+                  type="button"
+                  className="reply-reference reply-reference-nav"
+                  title={`跳转至消息 #${message.replyToMessageId}`}
+                  onClick={() => onNavigateToReply(replyTarget.id)}
+                >
+                  <span className="reply-reference-label">回复</span>
+                  <span className="reply-reference-snippet">{getReplyReferenceTextPreview(replyTarget)}</span>
+                </button>
+              ) : replyTarget ? (
+                <div className="reply-reference reply-reference-static" title={`TG #${message.replyToMessageId}`}>
+                  <span className="reply-reference-label">回复</span>
+                  <span className="reply-reference-snippet">{getReplyReferenceTextPreview(replyTarget)}</span>
+                </div>
+              ) : (
+                <div className="reply-reference reply-reference-miss" title={`TG #${message.replyToMessageId}`}>
+                  <span className="reply-reference-label">回复 #{message.replyToMessageId}</span>
+                  <span className="reply-reference-hint">（当前会话列表中尚无原文，可尝试加载更早消息）</span>
+                </div>
+              )
+            ) : (
+              <div className="reply-reference reply-reference-static">回复 #{message.replyToMessageId}</div>
+            )
           ) : null}
           {attachment ? <MessageAttachmentPreview attachment={attachment} /> : null}
-          <p className={message.isDeleted ? "message-text deleted" : "message-text"}>
-            {message.contentText || (attachment ? " " : "")}
-          </p>
+          {visibleContentText || !attachment ? (
+            <p className={message.isDeleted ? "message-text deleted" : "message-text"}>{visibleContentText}</p>
+          ) : null}
+          <div className="bubble-timestamp-row" aria-label={bubbleTitle}>
+            <time className="bubble-timestamp" dateTime={message.createdAt}>
+              {formatDateTime(message.createdAt)}
+            </time>
+            {message.editedAt ? (
+              <span className="bubble-edited-hint" title="已编辑">
+                已编辑
+              </span>
+            ) : null}
+          </div>
           {canManageMessage ? (
             <div className="message-actions bubble-hover-actions">
               {!attachment ? (
@@ -125,4 +175,19 @@ export function MessageBubble({
       )}
     </div>
   );
+}
+
+function getVisibleContentText(contentText: string, attachmentKind?: string) {
+  const trimmedText = contentText.trim();
+  const hiddenMediaLabels: Record<string, string> = {
+    image: "[图片]",
+    audio: "[音频]",
+    video: "[视频]",
+  };
+
+  if (attachmentKind && hiddenMediaLabels[attachmentKind] === trimmedText) {
+    return "";
+  }
+
+  return contentText;
 }

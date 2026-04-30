@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("moonchat", {
   getDashboardSnapshot: () => ipcRenderer.invoke("app:get-dashboard-snapshot"),
+  openImagePreview: (payload) => ipcRenderer.invoke("app:open-image-preview", payload),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   updateSettings: (settings) => ipcRenderer.invoke("settings:update", settings),
   requestTelegramUserCode: (channel) => ipcRenderer.invoke("telegram-user:request-code", channel),

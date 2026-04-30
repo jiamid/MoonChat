@@ -16,6 +16,10 @@ import type {
   RagProgressEvent,
 } from "../shared/contracts";
 import type { AiTab, AttachmentDraft } from "../app/types";
+import {
+  chatMessageElementId,
+  scrollChatMessageIntoView,
+} from "../app/utils";
 import { EmptyState } from "../components/common/EmptyState";
 import { KnowledgeBasePanel } from "../components/ai/KnowledgeBasePanel";
 import { MemoryEditor } from "../components/ai/MemoryEditor";
@@ -362,18 +366,21 @@ function AssistantChatPanel({
                 <div key={group.label} className="message-group">
                   <div className="message-group-label">{group.label}</div>
                   {group.items.map((message) => (
-                    <MessageBubble
-                      key={message.id}
-                      message={message}
-                      layout="assistant"
-                      editingDraft={editingDraft}
-                      editingMessageId={editingMessageId}
-                      onCancelEdit={onCancelEdit}
-                      onChangeEdit={onChangeEdit}
-                      onDelete={onDeleteMessage}
-                      onEdit={onEditMessage}
-                      onSaveEdit={onSaveEdit}
-                    />
+                    <div key={message.id} id={chatMessageElementId(message.id)} className="assistant-message-frame">
+                      <MessageBubble
+                        message={message}
+                        layout="assistant"
+                        editingDraft={editingDraft}
+                        editingMessageId={editingMessageId}
+                        replyLookupMessages={messages}
+                        onNavigateToReply={scrollChatMessageIntoView}
+                        onCancelEdit={onCancelEdit}
+                        onChangeEdit={onChangeEdit}
+                        onDelete={onDeleteMessage}
+                        onEdit={onEditMessage}
+                        onSaveEdit={onSaveEdit}
+                      />
+                    </div>
                   ))}
                 </div>
               ))
