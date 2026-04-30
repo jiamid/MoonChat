@@ -73,6 +73,7 @@ export class ConversationService {
         externalChatId: conversations.externalChatId,
         participantLabel: conversations.participantLabel,
         autoReplyEnabled: conversationAiSettings.autoReplyEnabled,
+        learnedThroughAt: conversationAiSettings.learnedThroughAt,
         updatedAt: conversations.updatedAt,
       })
       .from(conversations)
@@ -82,37 +83,47 @@ export class ConversationService {
       )
       .orderBy(desc(conversations.updatedAt));
 
-    const [summaryMemories, runningJobs] = await Promise.all([
-      this.database.db.query.memories.findMany({
-        where: and(
-          eq(memories.memoryScope, "conversation"),
-          eq(memories.memoryType, "summary"),
-        ),
-      }),
+    const [runningJobs, latestMessages] = await Promise.all([
       this.database.db.query.learningJobs.findMany({
         where: eq(learningJobs.status, "running"),
       }),
+      this.database.db
+        .select({
+          conversationId: messages.conversationId,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .orderBy(desc(messages.createdAt)),
     ]);
 
-    const summaryByConversationId = new Map(
-      summaryMemories.map((memory) => [memory.scopeRefId, memory.updatedAt] as const),
-    );
+    const latestMessageByConversationId = new Map<string, string>();
+    for (const message of latestMessages) {
+      if (!latestMessageByConversationId.has(message.conversationId)) {
+        latestMessageByConversationId.set(message.conversationId, message.createdAt);
+      }
+    }
     const runningConversationIds = new Set(
       runningJobs
         .map((job) => job.targetConversationId)
         .filter((conversationId): conversationId is string => Boolean(conversationId)),
     );
 
-    return rows.map((row) => ({
-      ...row,
-      autoReplyEnabled: Boolean(row.autoReplyEnabled),
-      learningStatus: runningConversationIds.has(row.id)
-        ? "running"
-        : summaryByConversationId.has(row.id)
-          ? "learned"
-          : "idle",
-      learnedAt: summaryByConversationId.get(row.id) ?? null,
-    }));
+    return rows.map((row) => {
+      const rawLearnedAt = row.learnedThroughAt ?? null;
+      const latestMessageAt = latestMessageByConversationId.get(row.id) ?? null;
+      const learnedAt =
+        rawLearnedAt && latestMessageAt && rawLearnedAt > latestMessageAt
+          ? latestMessageAt
+          : rawLearnedAt;
+      const hasFreshSummary = Boolean(learnedAt && (!latestMessageAt || learnedAt >= latestMessageAt));
+
+      return {
+        ...row,
+        autoReplyEnabled: Boolean(row.autoReplyEnabled),
+        learningStatus: runningConversationIds.has(row.id) ? "running" : hasFreshSummary ? "learned" : "idle",
+        learnedAt,
+      };
+    });
   }
 
   async listMessages(conversationId: string): Promise<ConversationMessage[]> {
@@ -240,6 +251,36 @@ export class ConversationService {
       conversationId,
       autoReplyEnabled: enabled ? 1 : 0,
       replyMode: "manual",
+    });
+    this.emitChanged(conversationId);
+  }
+
+  async getLearnedThroughAt(conversationId: string) {
+    const setting = await this.database.db.query.conversationAiSettings.findFirst({
+      where: eq(conversationAiSettings.conversationId, conversationId),
+    });
+    return setting?.learnedThroughAt ?? null;
+  }
+
+  async setLearnedThroughAt(conversationId: string, learnedThroughAt: string) {
+    const existing = await this.database.db.query.conversationAiSettings.findFirst({
+      where: eq(conversationAiSettings.conversationId, conversationId),
+    });
+
+    if (existing) {
+      await this.database.db
+        .update(conversationAiSettings)
+        .set({ learnedThroughAt, updatedAt: new Date().toISOString() })
+        .where(eq(conversationAiSettings.conversationId, conversationId));
+      this.emitChanged(conversationId);
+      return;
+    }
+
+    await this.database.db.insert(conversationAiSettings).values({
+      conversationId,
+      autoReplyEnabled: 0,
+      replyMode: "manual",
+      learnedThroughAt,
     });
     this.emitChanged(conversationId);
   }

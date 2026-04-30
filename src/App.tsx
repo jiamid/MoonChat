@@ -2961,6 +2961,10 @@ function ChatDetailContent({
   onParticipantLabelChange: (value: string) => void;
   onSaveParticipantLabel: () => Promise<void>;
 }) {
+  const visibleMemories = memories.filter(
+    (memory) => !(memory.memoryScope === "conversation" && memory.memoryType === "summary"),
+  );
+
   return (
     <>
       <section className="detail-card detail-hero-card">
@@ -3007,9 +3011,9 @@ function ChatDetailContent({
 
       <section className="detail-card">
         <h3>用户画像与记忆</h3>
-        {memories.length ? (
+        {visibleMemories.length ? (
           <div className="memory-stack">
-            {memories.map((memory) => (
+            {visibleMemories.map((memory) => (
               <div key={memory.id} className="memory-card">
                 <div className="memory-card-top">
                   <strong>{labelMemoryType(memory.memoryType)}</strong>

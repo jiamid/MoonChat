@@ -76,6 +76,7 @@ export const conversationAiSettings = sqliteTable("conversation_ai_settings", {
   fallbackToHuman: integer("fallback_to_human").notNull().default(1),
   cooldownSeconds: integer("cooldown_seconds").notNull().default(0),
   triggerRules: text("trigger_rules"),
+  learnedThroughAt: text("learned_through_at"),
   updatedAt: timestamp("updated_at"),
 });
 
@@ -230,6 +231,7 @@ export const bootstrapSql = `
     fallback_to_human INTEGER NOT NULL DEFAULT 1,
     cooldown_seconds INTEGER NOT NULL DEFAULT 0,
     trigger_rules TEXT,
+    learned_through_at TEXT,
     updated_at TEXT NOT NULL
   );
 

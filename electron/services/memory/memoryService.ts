@@ -7,20 +7,6 @@ export class MemoryService {
   constructor(private readonly database: DatabaseService) {}
   private static readonly GLOBAL_AI_SCOPE_ID = "global-ai";
 
-  async upsertConversationSummary(conversationId: string, content: string) {
-    await this.upsertMemory({
-      memoryScope: "conversation",
-      memoryType: "summary",
-      scopeRefId: conversationId,
-      content,
-      summary: "Latest conversation summary",
-      source: "learning_job",
-      importanceScore: 0.6,
-      confidence: 0.8,
-      isInferred: true,
-    });
-  }
-
   async upsertUserProfile(userId: string, content: string) {
     await this.upsertMemory({
       memoryScope: "user",
@@ -73,6 +59,7 @@ export class MemoryService {
     importanceScore?: number;
     confidence?: number;
     isInferred?: boolean;
+    updatedAt?: string;
   }) {
     const existing = await this.database.db.query.memories.findFirst({
       where: and(
@@ -88,7 +75,7 @@ export class MemoryService {
         .set({
           content: input.content,
           summary: input.summary,
-          updatedAt: new Date().toISOString(),
+          updatedAt: input.updatedAt ?? new Date().toISOString(),
         })
         .where(eq(memories.id, existing.id));
       return;
@@ -104,6 +91,7 @@ export class MemoryService {
       confidence: input.confidence ?? 0.75,
       source: input.source,
       isInferred: input.isInferred ? 1 : 0,
+      updatedAt: input.updatedAt,
     });
   }
 
@@ -210,15 +198,6 @@ export class MemoryService {
     });
   }
 
-  async getConversationSummaryMemory(conversationId: string) {
-    return this.database.db.query.memories.findFirst({
-      where: and(
-        eq(memories.memoryScope, "conversation"),
-        eq(memories.memoryType, "summary"),
-        eq(memories.scopeRefId, conversationId),
-      ),
-    });
-  }
 }
 
 function labelMemoryScope(memoryScope: string) {

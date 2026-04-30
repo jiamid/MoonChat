@@ -33,6 +33,8 @@ export interface LearningArtifacts {
   strategyNotes: string;
 }
 
+export type ExistingLearningArtifacts = Partial<LearningArtifacts>;
+
 export interface AiAssistantMemoryUpdate {
   memoryType: "base" | "style" | "knowledge";
   content: string;
@@ -175,9 +177,10 @@ export class LangChainAiService {
     conversationTitle: string;
     participantLabel: string;
     recentMessages: ConversationMessage[];
+    existingArtifacts?: ExistingLearningArtifacts;
   }): Promise<LearningArtifacts> {
     if (!this.isConfigured()) {
-      return buildFallbackArtifacts(input.recentMessages);
+      return buildFallbackArtifacts(input.recentMessages, input.existingArtifacts);
     }
 
     const chain = ChatPromptTemplate.fromMessages([
@@ -186,13 +189,15 @@ export class LangChainAiService {
         [
           buildCurrentTimeContext(),
           "你负责从聊天记录中提炼长期有价值的记忆，供后续自动回复模拟使用者时参考。",
-          "你不是在生成对外回复，也不是 AI 助手对话；你的任务只是在给定聊天内容内提炼事实、画像、策略与摘要。",
-          "请仅根据给定聊天内容总结，不要脑补没有出现的事实。",
-          '"summary" 必须是一段 1-3 句的摘要，概括这段会话主要聊了什么、当前进展和用户核心关注点。',
+          "你不是在生成对外回复，也不是 AI 助手对话；你的任务是把已有画像与记忆，和新的聊天记录融合成更新后的完整记忆。",
+          "请优先保留已有记忆中仍然有效、且新聊天记录没有推翻的信息；只在新聊天记录明确矛盾或显示过时时，才修正或移除旧信息。",
+          "请从本批新聊天记录中补充新增事实、偏好、项目进展和回复策略，但不要脑补没有证据的信息。",
+          "输出必须是融合后的完整版本，不是本轮新增内容的差异摘要。",
+          '"summary" 必须是一段 1-3 句的摘要，融合既有会话摘要与最新进展，概括当前上下文和用户核心关注点。',
           '"summary" 绝对不能按时间顺序复述消息，不能写成一条一条的流水账，不能直接拼接原话。',
           "输出必须是严格 JSON，不要使用 Markdown 代码块。",
           '字段必须包含: "summary", "userProfile", "keyFacts", "strategyNotes"。',
-          '"keyFacts" 必须是字符串数组。',
+          '"keyFacts" 必须是字符串数组，应包含仍然有效的旧事实和从新聊天记录中确认的新事实，去除重复项。',
         ].join("\n"),
       ],
       [
@@ -200,7 +205,9 @@ export class LangChainAiService {
         [
           `会话标题: {conversationTitle}`,
           `参与者标签: {participantLabel}`,
-          "最近消息:",
+          "已有画像与记忆:",
+          "{existingArtifactsText}",
+          "本批新聊天记录:",
           "{recentMessagesText}",
         ].join("\n\n"),
       ],
@@ -211,10 +218,11 @@ export class LangChainAiService {
     const raw = await chain.invoke({
       conversationTitle: input.conversationTitle,
       participantLabel: input.participantLabel,
+      existingArtifactsText: serializeExistingLearningArtifacts(input.existingArtifacts),
       recentMessagesText: serializeMessages(input.recentMessages),
     });
 
-    return parseLearningArtifacts(raw, input.recentMessages);
+    return parseLearningArtifacts(raw, input.recentMessages, input.existingArtifacts);
   }
 
   async generateAiAssistantResponse(input: {
@@ -646,36 +654,63 @@ function extractTextFromResponse(
   return "";
 }
 
-function parseLearningArtifacts(raw: string, messages: ConversationMessage[]): LearningArtifacts {
+function parseLearningArtifacts(
+  raw: string,
+  messages: ConversationMessage[],
+  existingArtifacts?: ExistingLearningArtifacts,
+): LearningArtifacts {
   const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
 
   try {
     const parsed = JSON.parse(cleaned) as Partial<LearningArtifacts>;
-      return {
-      summary: parsed.summary?.trim() || buildFallbackArtifacts(messages).summary,
-      userProfile: parsed.userProfile?.trim() || "暂无足够信息形成稳定用户画像。",
+    const fallback = buildFallbackArtifacts(messages, existingArtifacts);
+    return {
+      summary: parsed.summary?.trim() || fallback.summary,
+      userProfile: parsed.userProfile?.trim() || fallback.userProfile,
       keyFacts: Array.isArray(parsed.keyFacts)
         ? parsed.keyFacts.filter(
             (item): item is string => typeof item === "string" && item.trim().length > 0,
           )
-        : [],
-      strategyNotes: parsed.strategyNotes?.trim() || "后续继续观察用户表达风格和偏好。",
+        : fallback.keyFacts,
+      strategyNotes: parsed.strategyNotes?.trim() || fallback.strategyNotes,
     };
   } catch {
-    return buildFallbackArtifacts(messages);
+    return buildFallbackArtifacts(messages, existingArtifacts);
   }
 }
 
-function buildFallbackArtifacts(messages: ConversationMessage[]): LearningArtifacts {
+function buildFallbackArtifacts(
+  messages: ConversationMessage[],
+  existingArtifacts?: ExistingLearningArtifacts,
+): LearningArtifacts {
   const ordered = messages.slice(-20);
   const summary = buildFallbackSummary(ordered);
 
   return {
-    summary,
-    userProfile: "当前仍以原始聊天记录为主，尚未形成稳定用户画像。",
-    keyFacts: [],
-    strategyNotes: "优先基于最近消息和明确事实回复，避免过度推测。",
+    summary: existingArtifacts?.summary
+      ? `${existingArtifacts.summary}\n最新补充：${summary}`
+      : summary,
+    userProfile: existingArtifacts?.userProfile || "当前仍以原始聊天记录为主，尚未形成稳定用户画像。",
+    keyFacts: existingArtifacts?.keyFacts ?? [],
+    strategyNotes: existingArtifacts?.strategyNotes || "优先基于最近消息和明确事实回复，避免过度推测。",
   };
+}
+
+function serializeExistingLearningArtifacts(existingArtifacts: ExistingLearningArtifacts | undefined) {
+  if (!existingArtifacts) {
+    return "暂无已有画像与记忆。";
+  }
+
+  return JSON.stringify(
+    {
+      summary: existingArtifacts.summary || "",
+      userProfile: existingArtifacts.userProfile || "",
+      keyFacts: existingArtifacts.keyFacts ?? [],
+      strategyNotes: existingArtifacts.strategyNotes || "",
+    },
+    null,
+    2,
+  );
 }
 
 function buildFallbackSummary(messages: ConversationMessage[]) {

@@ -28,9 +28,11 @@ export class DatabaseService {
     this.ensureColumn("messages", "attachment_kind", "TEXT");
     this.ensureColumn("messages", "attachment_mime_type", "TEXT");
     this.ensureColumn("messages", "attachment_file_name", "TEXT");
+    this.ensureColumn("conversation_ai_settings", "learned_through_at", "TEXT");
     this.ensureColumn("knowledge_documents", "embedding_model", "TEXT");
     this.ensureColumn("knowledge_documents", "last_error", "TEXT");
     this.ensureColumn("knowledge_chunks", "embedding_model", "TEXT");
+    this.migrateConversationSummaryMemories();
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string) {
@@ -43,6 +45,65 @@ export class DatabaseService {
     }
 
     this.sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+
+  private migrateConversationSummaryMemories() {
+    this.sqlite.exec(`
+      INSERT INTO conversation_ai_settings (
+        id,
+        conversation_id,
+        auto_reply_enabled,
+        reply_mode,
+        fallback_to_human,
+        cooldown_seconds,
+        learned_through_at,
+        updated_at
+      )
+      SELECT
+        lower(hex(randomblob(4))) || '-' ||
+          lower(hex(randomblob(2))) || '-4' ||
+          substr(lower(hex(randomblob(2))), 2) || '-' ||
+          substr('89ab', abs(random()) % 4 + 1, 1) ||
+          substr(lower(hex(randomblob(2))), 2) || '-' ||
+          lower(hex(randomblob(6))),
+        scope_ref_id,
+        0,
+        'manual',
+        1,
+        0,
+        updated_at,
+        updated_at
+      FROM memories
+      WHERE memory_scope = 'conversation'
+        AND memory_type = 'summary'
+        AND scope_ref_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM conversation_ai_settings
+          WHERE conversation_ai_settings.conversation_id = memories.scope_ref_id
+        );
+
+      UPDATE conversation_ai_settings
+      SET learned_through_at = (
+        SELECT updated_at
+        FROM memories
+        WHERE memories.memory_scope = 'conversation'
+          AND memories.memory_type = 'summary'
+          AND memories.scope_ref_id = conversation_ai_settings.conversation_id
+      )
+      WHERE learned_through_at IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM memories
+          WHERE memories.memory_scope = 'conversation'
+            AND memories.memory_type = 'summary'
+            AND memories.scope_ref_id = conversation_ai_settings.conversation_id
+        );
+
+      DELETE FROM memories
+      WHERE memory_scope = 'conversation'
+        AND memory_type = 'summary';
+    `);
   }
 
   close() {
